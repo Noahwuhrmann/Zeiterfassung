@@ -1,4 +1,5 @@
 import os
+import math
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -69,11 +70,13 @@ with engine.begin() as conn:
 def now_local() -> datetime:
     return datetime.now(TZ)
 
-def minutes_between(start_iso: str, end_iso: str) -> int:
+ddef minutes_between(start_iso: str, end_iso: str) -> int:
     start = datetime.fromisoformat(start_iso).replace(tzinfo=TZ)
     end = datetime.fromisoformat(end_iso).replace(tzinfo=TZ)
     delta = end - start
-    return max(0, int(delta.total_seconds() // 60))
+    seconds = delta.total_seconds()
+    minutes = round(seconds / 60)   # kaufmännisches Runden (ab 30 Sek)
+    return max(0, minutes)
 
 def seconds_between(start_iso: str, end_iso: str) -> int:
     start = datetime.fromisoformat(start_iso).replace(tzinfo=TZ)
