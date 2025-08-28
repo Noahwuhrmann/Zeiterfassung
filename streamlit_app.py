@@ -189,7 +189,7 @@ st.title("⏱️ Zeiterfassung")
 
 # Sidebar Login
 st.sidebar.header("Login")
-name = st.sidebar.selectbox("Name (vordefiniert)", ALLOWED_USERS, index=0, key="name_select")
+name = st.sidebar.selectbox("Name", ALLOWED_USERS, index=0, key="name_select")
 if st.sidebar.button("Einloggen"):
     user_obj = get_or_create_user(name)
     st.session_state["user"] = {"id": user_obj.id, "name": user_obj.name}
