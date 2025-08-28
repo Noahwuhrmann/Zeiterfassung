@@ -213,6 +213,36 @@ def center_dataframes():
     )
 
 # ---------------- STREAMLIT UI ----------------
+
+# ---- Toggle Styling (bigger + green/red) ----
+def style_toggle():
+    st.markdown(
+        """
+        <style>
+        /* Make Streamlit toggle (Switch) larger */
+        div[data-testid="stSwitch"] { transform: scale(1.35); transform-origin: left center; }
+        div[data-testid="stSwitch"] label { cursor: pointer; }
+
+        /* Newer Streamlit builds render a button inside stSwitch */
+        div[data-testid="stSwitch"] button[aria-checked="true"]{
+            background-color:#22c55e !important; /* green */
+            border-color:#22c55e !important;
+            box-shadow:0 0 0 4px rgba(34,197,94,.25);
+        }
+        div[data-testid="stSwitch"] button[aria-checked="false"]{
+            background-color:#ef4444 !important; /* red */
+            border-color:#ef4444 !important;
+            box-shadow:0 0 0 4px rgba(239,68,68,.25);
+        }
+        
+        /* Fallback selectors for other Streamlit versions */
+        div[role="switch"][aria-checked="true"]{ background:#22c55e !important; }
+        div[role="switch"][aria-checked="false"]{ background:#ef4444 !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 st.set_page_config(page_title="Zeiterfassung", page_icon="⏱️", layout="wide")
 
 # Custom Toggle Styling
@@ -234,6 +264,7 @@ div[data-testid="stToggle"] input:checked + div {
 """, unsafe_allow_html=True)
 
 st.title("⏱️ Zeiterfassung")
+style_toggle()
 
 # Sidebar Login
 st.sidebar.header("Login")
