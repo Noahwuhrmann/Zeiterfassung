@@ -4,10 +4,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
-from sqlalchemy import (
-    create_engine, Integer, String, Text, ForeignKey,
-    select
-)
+from sqlalchemy import create_engine, Integer, String, Text, ForeignKey, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session, relationship
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -15,7 +12,6 @@ from sqlalchemy.exc import SQLAlchemyError
 TZ = ZoneInfo("Europe/Zurich")
 ALLOWED_USERS = [n.strip() for n in os.environ.get("ALLOWED_USERS", "Elena,Noah,Gast").split(",") if n.strip()]
 DATABASE_URL = os.environ.get("DATABASE_URL") or st.secrets.get("DATABASE_URL")
-
 if not DATABASE_URL:
     st.stop()
     raise RuntimeError("Set DATABASE_URL via environment or Streamlit secrets.")
@@ -29,9 +25,7 @@ engine = create_engine(
 )
 
 # ---------------- DB MODELS ----------------
-class Base(DeclarativeBase):
-    pass
-
+class Base(DeclarativeBase): ...
 class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -68,7 +62,6 @@ class Log(Base):
     details: Mapped[str | None] = mapped_column(Text, nullable=True)
     user: Mapped[User] = relationship(back_populates="logs")
 
-# Create tables + Index (aktive Session pro User)
 with engine.begin() as conn:
     Base.metadata.create_all(conn)
     conn.exec_driver_sql("""
@@ -88,19 +81,16 @@ def safe_commit(session: Session):
 def now_local() -> datetime:
     return datetime.now(TZ)
 
-def minutes_between(start_iso: str, end_iso: str) -> int:
-    start = datetime.fromisoformat(start_iso).replace(tzinfo=TZ)
-    end = datetime.fromisoformat(end_iso).replace(tzinfo=TZ)
-    delta = end - start
-    total_seconds = int(delta.total_seconds())
-    mins, secs = divmod(total_seconds, 60)
-    minutes = mins + (1 if secs >= 30 else 0)  # >=30s aufrunden
-    return max(0, minutes)
-
 def seconds_between(start_iso: str, end_iso: str) -> int:
     start = datetime.fromisoformat(start_iso).replace(tzinfo=TZ)
     end = datetime.fromisoformat(end_iso).replace(tzinfo=TZ)
     return max(0, int((end - start).total_seconds()))
+
+def rounded_minutes_from_seconds(total_seconds: int) -> int:
+    """Rundet NUR nach Sekunden: <30s -> 0m, >=30s -> 1m; darüber auf nächste volle Minute."""
+    mins = total_seconds // 60
+    secs = total_seconds % 60
+    return mins + (1 if secs >= 30 else 0)
 
 def month_key(dt: datetime) -> str:
     return dt.strftime("%Y-%m")
@@ -135,15 +125,11 @@ def add_log(user_id: int, kind: str, minutes: int | None = None, details: str | 
         safe_commit(s)
 
 def month_totals(user_id: int):
-    """Return list[(YYYY-MM, minutes)] from finished sessions + adjustments grouped by month."""
     with Session(engine) as s:
         sessions = s.scalars(
-            select(WorkSession)
-            .where(WorkSession.user_id == user_id, WorkSession.end_ts.is_not(None))
+            select(WorkSession).where(WorkSession.user_id == user_id, WorkSession.end_ts.is_not(None))
         ).all()
-        adjustments = s.scalars(
-            select(Adjustment).where(Adjustment.user_id == user_id)
-        ).all()
+        adjustments = s.scalars(select(Adjustment).where(Adjustment.user_id == user_id)).all()
     totals: dict[str, int] = {}
     for row in sessions:
         end = datetime.fromisoformat(row.end_ts).replace(tzinfo=TZ)
@@ -170,17 +156,10 @@ def fmt_hms(total_seconds: int) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 def live_timer_html(start_iso: str):
-    """Clientseitiger HH:MM:SS-Timer ohne Streamlit-Rerun (mit TZ-Offset)."""
     start_dt = datetime.fromisoformat(start_iso).replace(tzinfo=TZ)
     start_js = start_dt.isoformat()
     html = f"""
-    <div id="tt-timer" 
-         style="font-size:2rem;
-                font-weight:600;
-                font-variant-numeric: tabular-nums;
-                color:#00FFAA;">
-      00:00:00
-    </div>
+    <div id="tt-timer" style="font-size:2rem;font-weight:600;font-variant-numeric:tabular-nums;color:#00FFAA;">00:00:00</div>
     <script>
       const pad = (n) => n.toString().padStart(2,'0');
       const start = new Date("{start_js}");
@@ -193,26 +172,21 @@ def live_timer_html(start_iso: str):
         const s = sec%60;
         document.getElementById('tt-timer').textContent = `${{pad(h)}}:${{pad(m)}}:${{pad(s)}}`;
       }}
-      tick();
-      setInterval(tick, 1000);
+      tick(); setInterval(tick, 1000);
     </script>
     """
     st.components.v1.html(html, height=70)
 
-# ---------- Styling Helpers ----------
+# ---------- Styling ----------
 def center_dataframes():
-    st.markdown(
-        """
-        <style>
-        div[data-testid="stDataFrame"] table td div,
-        div[data-testid="stDataFrame"] table th div {
-            text-align: center !important;
-            justify-content: center !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.markdown("""
+    <style>
+    div[data-testid="stDataFrame"] table td div,
+    div[data-testid="stDataFrame"] table th div {
+        text-align: center !important;
+        justify-content: center !important;
+    }
+    </style>""", unsafe_allow_html=True)
 
 # ---------------- STREAMLIT UI ----------------
 st.set_page_config(page_title="Zeiterfassung", page_icon="⏱️", layout="wide")
@@ -241,7 +215,6 @@ with col1:
 
     if s_active:
         st.caption(f"Läuft seit: {s_active.start_ts}")
-
         with live_box:
             st.markdown("**Laufzeit (live):**")
             live_timer_html(s_active.start_ts)
@@ -249,11 +222,7 @@ with col1:
         if st.button("⏹️ Stoppen", type="primary", help="Beende deine Zeiterfassung"):
             end_ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
             secs = seconds_between(s_active.start_ts, end_ts)
-            mins = minutes_between(s_active.start_ts, end_ts)
-
-            # < 30 Sekunden → 0 Minuten
-            if secs < 30:
-                mins = 0
+            mins = rounded_minutes_from_seconds(secs)   # <<< einzig gültige Rundung
 
             with Session(engine) as s:
                 obj = s.get(WorkSession, s_active.id)
@@ -330,4 +299,4 @@ if not df_log.empty:
         df_log.to_csv(index=False).encode("utf-8"),
         file_name=f"logs_{user['name']}.csv",
         mime="text/csv"
-    
+    )
