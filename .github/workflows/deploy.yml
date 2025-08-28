@@ -1,0 +1,21 @@
+name: Deploy to Fly.io
+
+on:
+  push:
+    branches:
+      - main   # immer deployen, wenn auf main gepusht wird
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy app
+        run: flyctl deploy --remote-only --app time-tracker-streamlit-postgres
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
