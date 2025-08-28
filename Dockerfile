@@ -8,4 +8,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . /app
 ENV PYTHONUNBUFFERED=1 PORT=8080
 EXPOSE 8080
-CMD ["bash","-lc","python -m streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port $PORT"]
+CMD ["streamlit", "run", "streamlit_app.py", "--server.address=0.0.0.0", "--server.port=8080"]
