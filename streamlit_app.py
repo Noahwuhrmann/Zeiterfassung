@@ -70,12 +70,13 @@ with engine.begin() as conn:
 def now_local() -> datetime:
     return datetime.now(TZ)
 
-ddef minutes_between(start_iso: str, end_iso: str) -> int:
+def minutes_between(start_iso: str, end_iso: str) -> int:
     start = datetime.fromisoformat(start_iso).replace(tzinfo=TZ)
     end = datetime.fromisoformat(end_iso).replace(tzinfo=TZ)
     delta = end - start
-    seconds = delta.total_seconds()
-    minutes = round(seconds / 60)   # kaufmännisches Runden (ab 30 Sek)
+    total_seconds = int(delta.total_seconds())
+    mins, secs = divmod(total_seconds, 60)
+    minutes = mins + (1 if secs >= 30 else 0)  # >=30s rauf, sonst runter
     return max(0, minutes)
 
 def seconds_between(start_iso: str, end_iso: str) -> int:
