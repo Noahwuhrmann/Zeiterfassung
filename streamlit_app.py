@@ -20,6 +20,14 @@ if not DATABASE_URL:
     st.stop()
     raise RuntimeError("Set DATABASE_URL via environment or Streamlit secrets.")
 
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_recycle=1800,
+    pool_size=5,
+    max_overflow=5,
+)
+
 # ---------------- DB MODELS ----------------
 class Base(DeclarativeBase):
     pass
@@ -60,32 +68,14 @@ class Log(Base):
     details: Mapped[str | None] = mapped_column(Text, nullable=True)
     user: Mapped[User] = relationship(back_populates="logs")
 
-# ---------------- ENGINE & SCHEMA (CACHED) ----------------
-@st.cache_resource
-def get_engine():
-    return create_engine(
-        DATABASE_URL,
-        pool_pre_ping=True,
-        pool_recycle=1800,
-        pool_size=5,
-        max_overflow=5,
-    )
-
-engine = get_engine()
-
-@st.cache_resource
-def ensure_schema(_engine) -> bool:
-    with _engine.begin() as conn:
-        Base.metadata.create_all(conn)
-        # Genau eine aktive Session pro User
-        conn.exec_driver_sql("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_active_session_per_user
-            ON sessions (user_id)
-            WHERE end_ts IS NULL;
-        """)
-    return True
-
-_ = ensure_schema(engine)
+# Create tables + Index (aktive Session pro User)
+with engine.begin() as conn:
+    Base.metadata.create_all(conn)
+    conn.exec_driver_sql("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_active_session_per_user
+        ON sessions (user_id)
+        WHERE end_ts IS NULL;
+    """)
 
 # ---------------- HELPERS ----------------
 def safe_commit(session: Session):
@@ -99,12 +89,7 @@ def now_local() -> datetime:
     return datetime.now(TZ)
 
 def minutes_between(start_iso: str, end_iso: str) -> int:
-    """
-    Rundet Minuten passend:
-      - >=30 Sekunden aufrunden
-      - sonst abrunden
-      - niemals < 0
-    """
+    """Kaufmännisches Runden: >=30s aufrunden, sonst abrunden."""
     start = datetime.fromisoformat(start_iso).replace(tzinfo=TZ)
     end = datetime.fromisoformat(end_iso).replace(tzinfo=TZ)
     delta = end - start
@@ -150,8 +135,8 @@ def add_log(user_id: int, kind: str, minutes: int | None = None, details: str | 
         ))
         safe_commit(s)
 
-def month_totals_raw(user_id: int):
-    """Ungecachte Berechnung: [(YYYY-MM, minutes)] aus Sessions + Adjustments."""
+def month_totals(user_id: int):
+    """Return list[(YYYY-MM, minutes)] aus beendeten Sessions + Adjustments (Monat = Ende/Erstellungszeit)."""
     with Session(engine) as s:
         sessions = s.scalars(
             select(WorkSession)
@@ -173,7 +158,7 @@ def month_totals_raw(user_id: int):
 
 def month_minutes(user_id: int) -> int:
     key = month_key(now_local())
-    for k, v in month_totals_raw(user_id):
+    for k, v in month_totals(user_id):
         if k == key:
             return v
     return 0
@@ -207,30 +192,13 @@ def live_timer_html(start_iso: str):
         const h = Math.floor(sec/3600);
         const m = Math.floor((sec%3600)/60);
         const s = sec%60;
-        const el = document.getElementById('tt-timer');
-        if (el) el.textContent = `${{pad(h)}}:${{pad(m)}}:${{pad(s)}}`;
+        document.getElementById('tt-timer').textContent = `${{pad(h)}}:${{pad(m)}}:${{pad(s)}}`;
       }}
       tick();
       setInterval(tick, 1000);
     </script>
     """
     st.components.v1.html(html, height=70)
-
-# ---------------- CACHED READS ----------------
-@st.cache_data(ttl=10, show_spinner=False)
-def cached_month_totals(user_id: int):
-    return month_totals_raw(user_id)
-
-@st.cache_data(ttl=10, show_spinner=False)
-def cached_logs(user_id: int):
-    with Session(engine) as s:
-        rows = s.execute(
-            select(Log.ts, Log.kind, Log.minutes, Log.details)
-            .where(Log.user_id == user_id)
-            .order_by(Log.id.desc())
-            .limit(500)
-        ).all()
-    return rows
 
 # ---------------- STREAMLIT UI ----------------
 st.set_page_config(page_title="Zeiterfassung", page_icon="⏱️", layout="wide")
@@ -260,7 +228,6 @@ with col1:
     if s_active:
         st.caption(f"Läuft seit: {s_active.start_ts}")
 
-        # Live-Timer ohne Rerun
         with live_box:
             st.markdown("**Laufzeit (live):**")
             live_timer_html(s_active.start_ts)
@@ -279,7 +246,6 @@ with col1:
 
             add_log(user["id"], "stop", minutes=mins, details=f"Stop um {end_ts} (+{fmt_hms(secs)})")
             st.success(f"Gestoppt: {fmt_hms(secs)} verbucht.")
-            st.cache_data.clear()  # Logs/Monatsübersicht aktualisieren
             st.rerun()
     else:
         if st.button("▶️ Starten", type="primary", help="Starte eine neue Zeiterfassung"):
@@ -289,17 +255,13 @@ with col1:
                 safe_commit(s)
             add_log(user["id"], "start", details=f"Start um {ts}")
             st.success("Zeiterfassung gestartet.")
-            st.cache_data.clear()
             st.rerun()
 
     st.divider()
     st.subheader("Manuelle Anpassung")
-    # -> Form, damit Tippen keinen Rerun auslöst
-    with st.form(key="adjust_form", clear_on_submit=True):
-        delta = st.number_input("±Minuten (z. B. -30 oder 30)", step=1, value=0)
-        reason = st.text_input("Kommentar (optional)", value="")
-        submitted = st.form_submit_button("Buchen", help="Manuell Zeit hinzufügen oder abziehen")
-    if submitted:
+    delta = st.number_input("±Minuten (z. B. -30 oder 30)", step=1, value=0)
+    reason = st.text_input("Kommentar (optional)", value="")
+    if st.button("Buchen", help="Manuell Zeit hinzufügen oder abziehen"):
         if delta == 0:
             st.warning("Bitte eine von 0 verschiedene Minutenanzahl eingeben.")
         else:
@@ -309,18 +271,27 @@ with col1:
                 safe_commit(s)
             add_log(user["id"], "adjust", minutes=int(delta), details=reason or "Manuelle Anpassung")
             st.success(f"{'+' if delta>0 else ''}{int(delta)} Minuten verbucht.")
-            st.cache_data.clear()
             st.rerun()
 
 with col2:
     st.subheader("Monatsübersicht")
-    # Aggregat in Minuten -> HH:MM (Sekunden machen bei Monatswerten keinen Sinn)
     current = month_minutes(user["id"])
     st.metric("Aktueller Monat", f"{current//60:02d}:{current%60:02d} h")
 
-    data = cached_month_totals(user["id"])
-    df = pd.DataFrame([{"Monat": k, "Minuten": m, "Stunden": round(m/60, 2)} for k, m in data])
+    # --- Tabelle inkl. neuer Spalte "Std:Min" ---
+    data = month_totals(user["id"])  # [(YYYY-MM, minuten)]
+    rows = []
+    for monat, m in data:
+        rows.append({
+            "Monat": monat,
+            "Minuten": m,
+            "Stunden": round(m / 60, 2),
+            "Std:Min": f"{m // 60:02d}:{m % 60:02d}",
+        })
+    df = pd.DataFrame(rows, columns=["Monat", "Minuten", "Stunden", "Std:Min"])
+
     st.dataframe(df, use_container_width=True)
+
     if not df.empty:
         st.download_button(
             "CSV: Monate",
@@ -331,9 +302,15 @@ with col2:
 
 st.divider()
 st.subheader("Logbuch")
-logs = cached_logs(user["id"])
+with Session(engine) as s:
+    logs = s.execute(
+        select(Log.ts, Log.kind, Log.minutes, Log.details)
+        .where(Log.user_id == user["id"])
+        .order_by(Log.id.desc())
+        .limit(500)
+    ).all()
 df_log = pd.DataFrame(logs, columns=["ts", "kind", "minutes", "details"])
-st.dataframe(df_log, use_container_width=True, height=360)
+st.dataframe(df_log, use_container_width=True)
 if not df_log.empty:
     st.download_button(
         "CSV: Logbuch",
