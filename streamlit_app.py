@@ -154,7 +154,13 @@ def live_timer_html(start_iso: str):
     """
     start_js = start_iso.replace(" ", "T")  # "YYYY-MM-DDTHH:MM:SS"
     html = f"""
-    <div id="tt-timer" style="font-size:1.75rem;font-weight:600; font-variant-numeric: tabular-nums;">00:00:00</div>
+    <div id="tt-timer" 
+         style="font-size:2rem;
+                font-weight:600;
+                font-variant-numeric: tabular-nums;
+                color:#00FFAA;  /* helle, gut sichtbare Farbe */">
+      00:00:00
+    </div>
     <script>
       const pad = (n) => n.toString().padStart(2,'0');
       const start = new Date("{start_js}");
@@ -171,7 +177,7 @@ def live_timer_html(start_iso: str):
       setInterval(tick, 1000);
     </script>
     """
-    st.components.v1.html(html, height=60)
+    st.components.v1.html(html, height=70)
 
 # ---------------- STREAMLIT UI ----------------
 st.set_page_config(page_title="Zeiterfassung", page_icon="⏱️", layout="wide")
