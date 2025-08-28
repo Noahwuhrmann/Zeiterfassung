@@ -13,7 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 # ---------------- CONFIG ----------------
 TZ = ZoneInfo("Europe/Zurich")
-ALLOWED_USERS = [n.strip() for n in os.environ.get("ALLOWED_USERS", "Noah,Elena,Timon,Stefan,Gast").split(",") if n.strip()]
+ALLOWED_USERS = [n.strip() for n in os.environ.get("ALLOWED_USERS", "Elena,Noah,Gast").split(",") if n.strip()]
 DATABASE_URL = os.environ.get("DATABASE_URL") or st.secrets.get("DATABASE_URL")
 
 if not DATABASE_URL:
