@@ -5,22 +5,24 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
-from sqlalchemy import (create_engine, Integer, String, Text, ForeignKey,
-                        select)
+from sqlalchemy import (create_engine, Integer, String, Text, ForeignKey, select)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session, relationship
 
 # ---------------- CONFIG ----------------
 TZ = ZoneInfo("Europe/Zurich")
-ALLOWED_USERS = [n.strip() for n in os.environ.get("ALLOWED_USERS", "Noah,Elena,Timon,Stefan,Gast").split(",") if n.strip()]
+ALLOWED_USERS = [n.strip() for n in os.environ.get("ALLOWED_USERS", "Noah,Elena,Timon,Gast").split(",") if n.strip()]
 DATABASE_URL = os.environ.get("DATABASE_URL") or st.secrets.get("DATABASE_URL")
-
 if not DATABASE_URL:
     st.stop()
     raise RuntimeError("Set DATABASE_URL via environment or Streamlit secrets.")
 
+# Rerun-Intervall (Millisekunden) für Live-Sekundenanzeige
+REFRESH_MS = 2000  # -> bei Bedarf 1000 für echte Sekunde, 5000 für ruhiger
+
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 class Base(DeclarativeBase): ...
+
 # ---------------- MODELS ----------------
 class User(Base):
     __tablename__ = "users"
@@ -58,9 +60,11 @@ class Log(Base):
     details: Mapped[str | None] = mapped_column(Text, nullable=True)
     user: Mapped[User] = relationship(back_populates="logs")
 
-# Create tables if not exist
-with engine.begin() as conn:
-    Base.metadata.create_all(conn)
+# Schema nur EINMAL pro Server-Session erzeugen
+if "schema_created" not in st.session_state:
+    with engine.begin() as conn:
+        Base.metadata.create_all(conn)
+    st.session_state["schema_created"] = True
 
 # ---------------- HELPERS ----------------
 def now_local() -> datetime:
@@ -107,19 +111,15 @@ def active_session(user_id: int) -> WorkSession | None:
 
 def add_log(user_id: int, kind: str, minutes: int | None = None, details: str | None = None):
     with Session(engine) as s:
-        s.add(
-            Log(
-                user_id=user_id,
-                kind=kind,
-                minutes=minutes,
-                ts=now_local().strftime("%Y-%m-%d %H:%M:%S"),
-                details=details or "",
-            )
-        )
+        s.add(Log(user_id=user_id, kind=kind, minutes=minutes,
+                  ts=now_local().strftime("%Y-%m-%d %H:%M:%S"), details=details or ""))
         s.commit()
 
-def month_totals(user_id: int):
-    """Return list[(YYYY-MM, minutes)] from finished sessions + adjustments grouped by month of end_ts/created_ts."""
+# --- CACHED READS (werden über data_version ungültig gemacht) ---
+st.session_state.setdefault("data_version", 0)
+
+@st.cache_data(show_spinner=False)
+def get_month_totals_cached(user_id: int, _version: int):
     with Session(engine) as s:
         sessions = s.scalars(
             select(WorkSession).where(WorkSession.user_id == user_id, WorkSession.end_ts.is_not(None))
@@ -136,9 +136,20 @@ def month_totals(user_id: int):
         totals[k] = totals.get(k, 0) + int(a.minutes)
     return sorted(totals.items(), key=lambda kv: kv[0], reverse=True)
 
+@st.cache_data(show_spinner=False)
+def get_logs_cached(user_id: int, _version: int):
+    with Session(engine) as s:
+        rows = s.execute(
+            select(Log.ts, Log.kind, Log.minutes, Log.details)
+            .where(Log.user_id == user_id)
+            .order_by(Log.id.desc())
+            .limit(500)
+        ).all()
+    return rows
+
 def month_minutes(user_id: int) -> int:
     key = month_key(now_local())
-    for k, v in month_totals(user_id):
+    for k, v in get_month_totals_cached(user_id, st.session_state["data_version"]):
         if k == key:
             return v
     return 0
@@ -151,9 +162,9 @@ st.title("⏱️ Zeiterfassung")
 st.sidebar.header("Login")
 name = st.sidebar.selectbox("Name (vordefiniert)", ALLOWED_USERS, index=0, key="name_select")
 if st.sidebar.button("Einloggen"):
-    user = get_or_create_user(name)
-    st.session_state["user"] = {"id": user.id, "name": user.name}
-    st.success(f"Hallo {user.name}!")
+    u = get_or_create_user(name)
+    st.session_state["user"] = {"id": u.id, "name": u.name}
+    st.success(f"Hallo {u.name}!")
 
 user = st.session_state.get("user")
 if not user:
@@ -164,18 +175,14 @@ col1, col2 = st.columns([1, 1])
 
 with col1:
     st.subheader(f"Hallo {user['name']} 👋")
-
-    # Aktive Session prüfen
     s_active = active_session(user["id"])
 
-    # Nur wenn aktiv -> Auto-Refresh jede Sekunde
+    # Nur wenn aktiv, Seite in Intervallen neu ausführen (für Live-Sekunden)
     if s_active:
-        st_autorefresh(interval=1000, key=f"tick-{user['id']}-{s_active.id}")
+        st_autorefresh(interval=REFRESH_MS, key=f"tick-{user['id']}-{s_active.id}")
 
     if s_active:
         st.markdown(f"**Läuft seit:** {s_active.start_ts}")
-
-        # Live-Dauer in HH:MM:SS
         live_seconds = seconds_between(s_active.start_ts, now_local().strftime("%Y-%m-%d %H:%M:%S"))
         st.metric("Laufzeit (live)", fmt_hms(live_seconds))
 
@@ -188,6 +195,8 @@ with col1:
                 obj.minutes = mins
                 s.commit()
             add_log(user["id"], "stop", minutes=mins, details=f"Stop um {end_ts}")
+            # Daten invalidieren
+            st.session_state["data_version"] += 1
             st.success(f"Gestoppt: {mins} Minuten gebucht.")
             st.experimental_rerun()
     else:
@@ -213,41 +222,27 @@ with col1:
                 s.add(Adjustment(user_id=user["id"], minutes=int(delta), reason=reason.strip(), created_ts=ts))
                 s.commit()
             add_log(user["id"], "adjust", minutes=int(delta), details=reason or "Manuelle Anpassung")
+            st.session_state["data_version"] += 1  # Cache invalidieren
             st.success(f"{'+' if delta>0 else ''}{int(delta)} Minuten verbucht.")
             st.experimental_rerun()
 
 with col2:
     st.subheader("Monatsübersicht")
     current = month_minutes(user["id"])
-    # Anzeige HH:MM (Monatswerte bleiben in Minuten)
     st.metric("Aktueller Monat", f"{current//60:02d}:{current%60:02d} h")
 
-    data = month_totals(user["id"])
+    data = get_month_totals_cached(user["id"], st.session_state["data_version"])
     df = pd.DataFrame([{"Monat": k, "Minuten": m, "Stunden": round(m/60, 2)} for k, m in data])
     st.dataframe(df, use_container_width=True)
     if not df.empty:
-        st.download_button(
-            "CSV: Monate",
-            df.to_csv(index=False).encode("utf-8"),
-            file_name=f"months_{user['name']}.csv",
-            mime="text/csv",
-        )
+        st.download_button("CSV: Monate", df.to_csv(index=False).encode("utf-8"),
+                           file_name=f"months_{user['name']}.csv", mime="text/csv")
 
 st.divider()
 st.subheader("Logbuch")
-with Session(engine) as s:
-    logs = s.execute(
-        select(Log.ts, Log.kind, Log.minutes, Log.details)
-        .where(Log.user_id == user["id"])
-        .order_by(Log.id.desc())
-        .limit(500)
-    ).all()
-df_log = pd.DataFrame(logs, columns=["ts", "kind", "minutes", "details"])
+rows = get_logs_cached(user["id"], st.session_state["data_version"])
+df_log = pd.DataFrame(rows, columns=["ts", "kind", "minutes", "details"])
 st.dataframe(df_log, use_container_width=True)
 if not df_log.empty:
-    st.download_button(
-        "CSV: Logbuch",
-        df_log.to_csv(index=False).encode("utf-8"),
-        file_name=f"logs_{user['name']}.csv",
-        mime="text/csv",
-    )
+    st.download_button("CSV: Logbuch", df_log.to_csv(index=False).encode("utf-8"),
+                       file_name=f"logs_{user['name']}.csv", mime="text/csv")
