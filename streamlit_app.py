@@ -68,7 +68,6 @@ class Log(Base):
     details: Mapped[str | None] = mapped_column(Text, nullable=True)
     user: Mapped[User] = relationship(back_populates="logs")
 
-# Create tables + Index
 with engine.begin() as conn:
     Base.metadata.create_all(conn)
     conn.exec_driver_sql("""
@@ -171,31 +170,31 @@ def fmt_hms(total_seconds: int) -> str:
 def live_timer_html(start_iso: str):
     start_dt = datetime.fromisoformat(start_iso).replace(tzinfo=TZ)
     start_js = start_dt.isoformat()
-    html = """
-    <div id="tt-timer"
-         style="font-size:2.2rem;
-                font-weight:700;
+    html = f"""
+    <div id="tt-timer" 
+         style="font-size:2rem;
+                font-weight:600;
                 font-variant-numeric: tabular-nums;
                 color:#00FFAA;">
       00:00:00
     </div>
     <script>
       const pad = (n) => n.toString().padStart(2,'0');
-      const start = new Date("{{START_ISO}}");
-      function tick(){
+      const start = new Date("{start_js}");
+      function tick(){{
         const now = new Date();
         let sec = Math.floor((now - start)/1000);
         if (sec < 0) sec = 0;
         const h = Math.floor(sec/3600);
         const m = Math.floor((sec%3600)/60);
         const s = sec%60;
-        document.getElementById('tt-timer').textContent = `${pad(h)}:${pad(m)}:${pad(s)}`;
-      }
+        document.getElementById('tt-timer').textContent = `${{pad(h)}}:${{pad(m)}}:${{pad(s)}}`;
+      }}
       tick();
       setInterval(tick, 1000);
     </script>
     """
-    st.components.v1.html(html.replace("{{START_ISO}}", start_js), height=70)
+    st.components.v1.html(html, height=70)
 
 # ---------- Styling Helpers ----------
 def center_dataframes():
@@ -207,66 +206,43 @@ def center_dataframes():
             text-align: center !important;
             justify-content: center !important;
         }
+
+        /* Toggle label text */
+        div[data-testid="stSwitch"] label div[data-testid="stMarkdownContainer"] p {
+            font-size: 1.2rem;
+            font-weight: bold;
+        }
+
+        /* Enlarge switch ~50% */
+        div[data-testid="stSwitch"] {
+            transform: scale(1.5);
+            transform-origin: left center;
+            margin: 15px 0;
+        }
+
+        /* OFF state -> red */
+        div[data-testid="stSwitch"] label div[role="switch"][aria-checked="false"] {
+            background-color: #e11d48 !important; /* rose-600 */
+            border-color: #e11d48 !important;
+        }
+        /* ON state -> green */
+        div[data-testid="stSwitch"] label div[role="switch"][aria-checked="true"] {
+            background-color: #10b981 !important; /* emerald-500 */
+            border-color: #10b981 !important;
+        }
+        /* Bigger thumb */
+        div[data-testid="stSwitch"] label div[role="switch"] span {
+            transform: scale(1.15);
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 # ---------------- STREAMLIT UI ----------------
-
-# ---- Toggle Styling (bigger + green/red) ----
-def style_toggle():
-    st.markdown(
-        """
-        <style>
-        /* Make Streamlit toggle (Switch) larger */
-        div[data-testid="stSwitch"] { transform: scale(1.35); transform-origin: left center; }
-        div[data-testid="stSwitch"] label { cursor: pointer; }
-
-        /* Newer Streamlit builds render a button inside stSwitch */
-        div[data-testid="stSwitch"] button[aria-checked="true"]{
-            background-color:#22c55e !important; /* green */
-            border-color:#22c55e !important;
-            box-shadow:0 0 0 4px rgba(34,197,94,.25);
-        }
-        div[data-testid="stSwitch"] button[aria-checked="false"]{
-            background-color:#ef4444 !important; /* red */
-            border-color:#ef4444 !important;
-            box-shadow:0 0 0 4px rgba(239,68,68,.25);
-        }
-        
-        /* Fallback selectors for other Streamlit versions */
-        div[role="switch"][aria-checked="true"]{ background:#22c55e !important; }
-        div[role="switch"][aria-checked="false"]{ background:#ef4444 !important; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
 st.set_page_config(page_title="Zeiterfassung", page_icon="⏱️", layout="wide")
-
-# Custom Toggle Styling
-st.markdown("""
-<style>
-div[data-testid="stToggle"] label {
-  transform: scale(1.35);
-  transform-origin: left center;
-}
-div[data-testid="stToggle"] input:not(:checked) + div {
-  background: #dc2626 !important;
-  box-shadow: 0 0 0 2px rgba(220,38,38,0.25);
-}
-div[data-testid="stToggle"] input:checked + div {
-  background: #16a34a !important;
-  box-shadow: 0 0 0 2px rgba(22,163,74,0.25);
-}
-</style>
-""", unsafe_allow_html=True)
-
 st.title("⏱️ Zeiterfassung")
-style_toggle()
 
-# Sidebar Login
 st.sidebar.header("Login")
 name = st.sidebar.selectbox("Name", ALLOWED_USERS, index=0, key="name_select")
 if st.sidebar.button("Einloggen", help="Logge dich mit deinem Namen ein"):
@@ -287,38 +263,39 @@ with col1:
     s_active = active_session(user["id"])
     live_box = st.empty()
 
-    if s_active:
-        st.caption(f"Läuft seit: {s_active.start_ts}")
+    state = st.toggle("Eingestempelt", value=bool(s_active), key="toggle")
+    if state and not s_active:
+        ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
+        with Session(engine) as s:
+            s.add(WorkSession(user_id=user["id"], start_ts=ts))
+            safe_commit(s)
+        add_log(user["id"], "start", details=f"Start um {ts}")
+        st.success("Zeiterfassung gestartet.")
+        st.rerun()
+    elif not state and s_active:
+        end_ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
+        secs = seconds_between(s_active.start_ts, end_ts)
+        mins = minutes_between(s_active.start_ts, end_ts)
 
-        with live_box:
-            st.markdown("**Laufzeit (live):**")
+        with Session(engine) as s:
+            obj = s.get(WorkSession, s_active.id)
+            obj.end_ts = end_ts
+            obj.minutes = mins
+            safe_commit(s)
+
+        add_log(user["id"], "stop", minutes=mins, details=f"Stop um {end_ts} (+{fmt_hms(secs)})")
+        st.success(f"Gestoppt: {fmt_hms(secs)} verbucht.")
+        st.rerun()
+
+    st.markdown("**Laufzeit (live):**")
+    with live_box:
+        st.markdown("**Laufzeit (live):**")
+        if s_active:
             live_timer_html(s_active.start_ts)
-
-        if st.toggle("Eingestempelt", value=True):
-            pass
+            st.caption("Eingestempelt")
         else:
-            end_ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
-            secs = seconds_between(s_active.start_ts, end_ts)
-            mins = minutes_between(s_active.start_ts, end_ts)
-
-            with Session(engine) as s:
-                obj = s.get(WorkSession, s_active.id)
-                obj.end_ts = end_ts
-                obj.minutes = mins
-                safe_commit(s)
-
-            add_log(user["id"], "stop", minutes=mins, details=f"Stop um {end_ts} (+{fmt_hms(secs)})")
-            st.success(f"Gestoppt: {fmt_hms(secs)} verbucht.")
-            st.rerun()
-    else:
-        if st.toggle("Eingestempelt", value=False):
-            ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
-            with Session(engine) as s:
-                s.add(WorkSession(user_id=user["id"], start_ts=ts))
-                safe_commit(s)
-            add_log(user["id"], "start", details=f"Start um {ts}")
-            st.success("Zeiterfassung gestartet.")
-            st.rerun()
+            st.markdown('<div style="font-size:2rem; font-weight:600; font-variant-numeric: tabular-nums; color:#e11d48;">00:00:00</div>', unsafe_allow_html=True)
+            st.caption("Nicht eingestempelt")
 
     st.divider()
     st.subheader("Manuelle Anpassung")
