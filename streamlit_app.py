@@ -1,15 +1,15 @@
 import os
-import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
 from sqlalchemy import (
     create_engine, Integer, String, Text, ForeignKey,
-    select, func
+    select
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session, relationship
+from sqlalchemy.exc import SQLAlchemyError
 
 # ---------------- CONFIG ----------------
 TZ = ZoneInfo("Europe/Zurich")
@@ -20,7 +20,13 @@ if not DATABASE_URL:
     st.stop()
     raise RuntimeError("Set DATABASE_URL via environment or Streamlit secrets.")
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_recycle=1800,
+    pool_size=5,
+    max_overflow=5,
+)
 
 # ---------------- DB MODELS ----------------
 class Base(DeclarativeBase):
@@ -55,18 +61,30 @@ class Adjustment(Base):
 class Log(Base):
     __tablename__ = "logs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)  # Index hinzugefügt
     kind: Mapped[str] = mapped_column(String(16), nullable=False)  # start | stop | adjust
     minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     ts: Mapped[str] = mapped_column(String(19), nullable=False)
     details: Mapped[str | None] = mapped_column(Text, nullable=True)
     user: Mapped[User] = relationship(back_populates="logs")
 
-# Create tables if not exist
+# Create tables + Index (aktive Session pro User)
 with engine.begin() as conn:
     Base.metadata.create_all(conn)
+    conn.exec_driver_sql("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_active_session_per_user
+        ON sessions (user_id)
+        WHERE end_ts IS NULL;
+    """)
 
 # ---------------- HELPERS ----------------
+def safe_commit(session: Session):
+    try:
+        session.commit()
+    except SQLAlchemyError:
+        session.rollback()
+        raise
+
 def now_local() -> datetime:
     return datetime.now(TZ)
 
@@ -76,7 +94,7 @@ def minutes_between(start_iso: str, end_iso: str) -> int:
     delta = end - start
     total_seconds = int(delta.total_seconds())
     mins, secs = divmod(total_seconds, 60)
-    minutes = mins + (1 if secs >= 30 else 0)  # >=30s rauf, sonst runter
+    minutes = mins + (1 if secs >= 30 else 0)  # >=30s aufrunden
     return max(0, minutes)
 
 def seconds_between(start_iso: str, end_iso: str) -> int:
@@ -93,7 +111,7 @@ def get_or_create_user(name: str) -> User:
         if not user:
             user = User(name=name)
             s.add(user)
-            s.commit()
+            safe_commit(s)
             s.refresh(user)
         return user
 
@@ -114,7 +132,7 @@ def add_log(user_id: int, kind: str, minutes: int | None = None, details: str | 
             ts=now_local().strftime("%Y-%m-%d %H:%M:%S"),
             details=details or ""
         ))
-        s.commit()
+        safe_commit(s)
 
 def month_totals(user_id: int):
     """Return list[(YYYY-MM, minutes)] from finished sessions + adjustments grouped by month."""
@@ -152,17 +170,15 @@ def fmt_hms(total_seconds: int) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 def live_timer_html(start_iso: str):
-    """
-    Clientseitiger HH:MM:SS-Timer ohne Streamlit-Rerun.
-    Erwartet 'YYYY-MM-DD HH:MM:SS' in *Browser-Lokaltzeit*.
-    """
-    start_js = start_iso.replace(" ", "T")  # "YYYY-MM-DDTHH:MM:SS"
+    """Clientseitiger HH:MM:SS-Timer ohne Streamlit-Rerun (mit TZ-Offset)."""
+    start_dt = datetime.fromisoformat(start_iso).replace(tzinfo=TZ)
+    start_js = start_dt.isoformat()
     html = f"""
     <div id="tt-timer" 
          style="font-size:2rem;
                 font-weight:600;
                 font-variant-numeric: tabular-nums;
-                color:#00FFAA;  /* helle, gut sichtbare Farbe */">
+                color:#00FFAA;">
       00:00:00
     </div>
     <script>
@@ -190,7 +206,7 @@ st.title("⏱️ Zeiterfassung")
 # Sidebar Login
 st.sidebar.header("Login")
 name = st.sidebar.selectbox("Name", ALLOWED_USERS, index=0, key="name_select")
-if st.sidebar.button("Einloggen"):
+if st.sidebar.button("Einloggen", help="Logge dich mit deinem Namen ein"):
     user_obj = get_or_create_user(name)
     st.session_state["user"] = {"id": user_obj.id, "name": user_obj.name}
     st.success(f"Hallo {user_obj.name}!")
@@ -211,12 +227,11 @@ with col1:
     if s_active:
         st.caption(f"Läuft seit: {s_active.start_ts}")
 
-        # Live-Timer clientseitig (kein Rerun)
         with live_box:
             st.markdown("**Laufzeit (live):**")
             live_timer_html(s_active.start_ts)
 
-        if st.button("⏹️ Stoppen", type="primary"):
+        if st.button("⏹️ Stoppen", type="primary", help="Beende deine Zeiterfassung"):
             end_ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
             secs = seconds_between(s_active.start_ts, end_ts)
             mins = minutes_between(s_active.start_ts, end_ts)
@@ -226,41 +241,40 @@ with col1:
                 obj = s.get(WorkSession, s_active.id)
                 obj.end_ts = end_ts
                 obj.minutes = mins
-                s.commit()
+                safe_commit(s)
 
             add_log(user["id"], "stop", minutes=mins, details=f"Stop um {end_ts} (+{fmt_hms(secs)})")
             st.success(f"Gestoppt: {fmt_hms(secs)} verbucht.")
-            st.experimental_rerun()  # einmalig neu zeichnen, damit Übersicht/Log aktualisiert sind
+            st.rerun()
     else:
-        if st.button("▶️ Starten", type="primary"):
+        if st.button("▶️ Starten", type="primary", help="Starte eine neue Zeiterfassung"):
             ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
             with Session(engine) as s:
                 s.add(WorkSession(user_id=user["id"], start_ts=ts))
-                s.commit()
+                safe_commit(s)
             add_log(user["id"], "start", details=f"Start um {ts}")
             st.success("Zeiterfassung gestartet.")
-            st.experimental_rerun()  # einmalig neu zeichnen, damit Timer erscheint
+            st.rerun()
 
     st.divider()
     st.subheader("Manuelle Anpassung")
     delta = st.number_input("±Minuten (z. B. -30 oder 30)", step=1, value=0)
     reason = st.text_input("Kommentar (optional)", value="")
-    if st.button("Buchen"):
+    if st.button("Buchen", help="Manuell Zeit hinzufügen oder abziehen"):
         if delta == 0:
             st.warning("Bitte eine von 0 verschiedene Minutenanzahl eingeben.")
         else:
             ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
             with Session(engine) as s:
                 s.add(Adjustment(user_id=user["id"], minutes=int(delta), reason=reason.strip(), created_ts=ts))
-                s.commit()
+                safe_commit(s)
             add_log(user["id"], "adjust", minutes=int(delta), details=reason or "Manuelle Anpassung")
             st.success(f"{'+' if delta>0 else ''}{int(delta)} Minuten verbucht.")
-            st.experimental_rerun()  # Übersicht/Log sofort aktualisieren
+            st.rerun()
 
 with col2:
     st.subheader("Monatsübersicht")
     current = month_minutes(user["id"])
-    # hier HH:MM (keine Sekunden, Monatsaggregate)
     st.metric("Aktueller Monat", f"{current//60:02d}:{current%60:02d} h")
 
     data = month_totals(user["id"])
