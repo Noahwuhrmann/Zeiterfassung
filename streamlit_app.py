@@ -249,8 +249,7 @@ with col1:
         if st.button("⏹️ Stoppen", type="primary", help="Beende deine Zeiterfassung"):
             end_ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
             secs = seconds_between(s_active.start_ts, end_ts)
-            mins = minutes_between(s_active.start_ts, end_ts)
-            mins = max(1, mins)  # nie 0 Minuten verbuchen
+            mins = minutes_between(s_active.start_ts, end_ts)  # <30s => 0, ab 30s => +1
 
             with Session(engine) as s:
                 obj = s.get(WorkSession, s_active.id)
