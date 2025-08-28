@@ -89,13 +89,12 @@ def now_local() -> datetime:
     return datetime.now(TZ)
 
 def minutes_between(start_iso: str, end_iso: str) -> int:
-    """Kaufmännisches Runden: >=30s aufrunden, sonst abrunden."""
     start = datetime.fromisoformat(start_iso).replace(tzinfo=TZ)
     end = datetime.fromisoformat(end_iso).replace(tzinfo=TZ)
     delta = end - start
     total_seconds = int(delta.total_seconds())
     mins, secs = divmod(total_seconds, 60)
-    minutes = mins + (1 if secs >= 30 else 0)
+    minutes = mins + (1 if secs >= 30 else 0)  # >=30s aufrunden
     return max(0, minutes)
 
 def seconds_between(start_iso: str, end_iso: str) -> int:
@@ -136,7 +135,7 @@ def add_log(user_id: int, kind: str, minutes: int | None = None, details: str | 
         safe_commit(s)
 
 def month_totals(user_id: int):
-    """Return list[(YYYY-MM, minutes)] aus beendeten Sessions + Adjustments (Monat = Ende/Erstellungszeit)."""
+    """Return list[(YYYY-MM, minutes)] from finished sessions + adjustments grouped by month."""
     with Session(engine) as s:
         sessions = s.scalars(
             select(WorkSession)
@@ -199,6 +198,21 @@ def live_timer_html(start_iso: str):
     </script>
     """
     st.components.v1.html(html, height=70)
+
+# ---------- Styling Helpers ----------
+def center_dataframes():
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stDataFrame"] table td div,
+        div[data-testid="stDataFrame"] table th div {
+            text-align: center !important;
+            justify-content: center !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # ---------------- STREAMLIT UI ----------------
 st.set_page_config(page_title="Zeiterfassung", page_icon="⏱️", layout="wide")
@@ -278,25 +292,14 @@ with col2:
     current = month_minutes(user["id"])
     st.metric("Aktueller Monat", f"{current//60:02d}:{current%60:02d} h")
 
-    # --- Tabelle inkl. neuer Spalte "Std:Min" ---
-    data = month_totals(user["id"])  # [(YYYY-MM, minuten)]
-    rows = []
-    for monat, m in data:
-        rows.append({
-            "Monat": monat,
-            "Minuten": m,
-            "Stunden": round(m / 60, 2),
-            "Std:Min": f"{m // 60:02d}:{m % 60:02d}",
-        })
-    df = pd.DataFrame(rows, columns=["Monat", "Minuten", "Stunden", "Std:Min"])
+    data = month_totals(user["id"])
+    df = pd.DataFrame([
+        {"Monat": k, "Minuten": m, "Stunden": round(m/60, 2), "Std:Min": f"{m//60:02d}:{m%60:02d}"}
+        for k, m in data
+    ])
 
-    # --- Schrift in allen Zellen zentrieren ---
-    styled_df = df.style.set_properties(**{
-        'text-align': 'center'
-    }).set_table_styles([dict(selector='th', props=[('text-align', 'center')])])
-
-    st.dataframe(styled_df, use_container_width=True)
-
+    center_dataframes()
+    st.dataframe(df, use_container_width=True)
     if not df.empty:
         st.download_button(
             "CSV: Monate",
@@ -304,6 +307,7 @@ with col2:
             file_name=f"months_{user['name']}.csv",
             mime="text/csv"
         )
+
 st.divider()
 st.subheader("Logbuch")
 with Session(engine) as s:
@@ -314,6 +318,8 @@ with Session(engine) as s:
         .limit(500)
     ).all()
 df_log = pd.DataFrame(logs, columns=["ts", "kind", "minutes", "details"])
+
+center_dataframes()
 st.dataframe(df_log, use_container_width=True)
 if not df_log.empty:
     st.download_button(
