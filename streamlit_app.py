@@ -290,7 +290,12 @@ with col2:
         })
     df = pd.DataFrame(rows, columns=["Monat", "Minuten", "Stunden", "Std:Min"])
 
-    st.dataframe(df, use_container_width=True)
+    # --- Schrift in allen Zellen zentrieren ---
+    styled_df = df.style.set_properties(**{
+        'text-align': 'center'
+    }).set_table_styles([dict(selector='th', props=[('text-align', 'center')])])
+
+    st.dataframe(styled_df, use_container_width=True)
 
     if not df.empty:
         st.download_button(
@@ -299,7 +304,6 @@ with col2:
             file_name=f"months_{user['name']}.csv",
             mime="text/csv"
         )
-
 st.divider()
 st.subheader("Logbuch")
 with Session(engine) as s:
