@@ -120,7 +120,7 @@ def month_minutes(user_id: int) -> int:
 
 # ---------------- STREAMLIT UI ----------------
 st.set_page_config(page_title="Zeiterfassung", page_icon="⏱️", layout="wide")
-st.title("⏱️ Zeiterfassung (Postgres)")
+st.title("⏱️ Zeiterfassung")
 
 # Sidebar Login
 st.sidebar.header("Login")
