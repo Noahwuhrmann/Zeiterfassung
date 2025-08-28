@@ -249,7 +249,11 @@ with col1:
         if st.button("⏹️ Stoppen", type="primary", help="Beende deine Zeiterfassung"):
             end_ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
             secs = seconds_between(s_active.start_ts, end_ts)
-            mins = minutes_between(s_active.start_ts, end_ts)  # <30s => 0, ab 30s => +1
+            mins = minutes_between(s_active.start_ts, end_ts)
+
+            # < 30 Sekunden → 0 Minuten
+            if secs < 30:
+                mins = 0
 
             with Session(engine) as s:
                 obj = s.get(WorkSession, s_active.id)
@@ -326,4 +330,4 @@ if not df_log.empty:
         df_log.to_csv(index=False).encode("utf-8"),
         file_name=f"logs_{user['name']}.csv",
         mime="text/csv"
-    )
+    
