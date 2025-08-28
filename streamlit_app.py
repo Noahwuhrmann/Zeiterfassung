@@ -18,7 +18,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL") or st.secrets.get("DATABASE_URL")
 
 if not DATABASE_URL:
     st.stop()
-    raise RuntimeError("Set DATABASE_URL via environment or Streamlit secrets.")
+    raise RuntimeError("Set DATABASE_URL via environment oder Streamlit secrets.")
 
 engine = create_engine(
     DATABASE_URL,
@@ -135,7 +135,7 @@ def add_log(user_id: int, kind: str, minutes: int | None = None, details: str | 
         safe_commit(s)
 
 def month_totals(user_id: int):
-    """Return list[(YYYY-MM, minutes)] from finished sessions + adjustments grouped by month."""
+    """Return list[(YYYY-MM, minutes)] aus beendeten Sessions + Adjustments gruppiert nach Monat."""
     with Session(engine) as s:
         sessions = s.scalars(
             select(WorkSession)
@@ -175,10 +175,11 @@ def live_timer_html(start_iso: str):
     start_js = start_dt.isoformat()
     html = f"""
     <div id="tt-timer" 
-         style="font-size:2rem;
-                font-weight:600;
+         style="font-size:3rem;
+                font-weight:700;
                 font-variant-numeric: tabular-nums;
-                color:#00FFAA;">
+                color:#00FFAA;
+                text-align:center;">
       00:00:00
     </div>
     <script>
@@ -197,9 +198,9 @@ def live_timer_html(start_iso: str):
       setInterval(tick, 1000);
     </script>
     """
-    st.components.v1.html(html, height=70)
+    st.components.v1.html(html, height=80)
 
-# ---------- Styling Helpers ----------
+# ---------- UI Helpers ----------
 def center_dataframes():
     st.markdown(
         """
@@ -214,8 +215,36 @@ def center_dataframes():
         unsafe_allow_html=True,
     )
 
+# --- Neue kleine Helfer für Toggle-Start/Stop ---
+def start_new_session(user_id: int):
+    ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
+    with Session(engine) as s:
+        s.add(WorkSession(user_id=user_id, start_ts=ts))
+        safe_commit(s)
+    add_log(user_id, "start", details=f"Start um {ts}")
+
+def stop_current_session(user_id: int, ws: WorkSession):
+    end_ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
+    secs = seconds_between(ws.start_ts, end_ts)
+    mins = minutes_between(ws.start_ts, end_ts)   # <30s => 0, ab 30s => +1
+    with Session(engine) as s:
+        obj = s.get(WorkSession, ws.id)
+        obj.end_ts = end_ts
+        obj.minutes = mins
+        safe_commit(s)
+    add_log(user_id, "stop", minutes=mins, details=f"Stop um {end_ts} (+{fmt_hms(secs)})")
+
 # ---------------- STREAMLIT UI ----------------
 st.set_page_config(page_title="Zeiterfassung", page_icon="⏱️", layout="wide")
+
+# kleines optisches Tuning
+st.markdown("""
+<style>
+div[data-testid="stMetricValue"]{font-size:1.8rem !important;}
+#tt-timer { text-align:center; font-size:3rem; font-weight:700; letter-spacing:0.5px; }
+</style>
+""", unsafe_allow_html=True)
+
 st.title("⏱️ Zeiterfassung")
 
 # Sidebar Login
@@ -237,38 +266,43 @@ with col1:
     st.subheader(f"Hallo {user['name']} 👋")
 
     s_active = active_session(user["id"])
+    is_running_now = s_active is not None
+
+    # Vorherigen Status merken, damit wir Wechsel erkennen
+    if "was_running" not in st.session_state:
+        st.session_state["was_running"] = is_running_now
+
+    # Toggle statt Buttons
+    running = st.toggle(
+        "Eingestempelt",
+        value=is_running_now,
+        help="Schalte ein zum Einstempeln, aus zum Ausstempeln.",
+        key="inout_toggle"
+    )
+
+    # Zustandswechsel auswerten
+    if running != st.session_state["was_running"]:
+        if running and not is_running_now:
+            start_new_session(user["id"])
+            st.session_state["was_running"] = True
+            st.success("Zeiterfassung gestartet.")
+            st.rerun()
+        elif not running and is_running_now:
+            stop_current_session(user["id"], s_active)
+            st.session_state["was_running"] = False
+            st.success("Zeiterfassung gestoppt.")
+            st.rerun()
+
+    # Timer/Status
     live_box = st.empty()
-
-    if s_active:
+    if is_running_now:
         st.caption(f"Läuft seit: {s_active.start_ts}")
-
         with live_box:
             st.markdown("**Laufzeit (live):**")
             live_timer_html(s_active.start_ts)
-
-        if st.button("⏹️ Stoppen", type="primary", help="Beende deine Zeiterfassung"):
-            end_ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
-            secs = seconds_between(s_active.start_ts, end_ts)
-            mins = minutes_between(s_active.start_ts, end_ts)  # <30s => 0, ab 30s => +1
-
-            with Session(engine) as s:
-                obj = s.get(WorkSession, s_active.id)
-                obj.end_ts = end_ts
-                obj.minutes = mins
-                safe_commit(s)
-
-            add_log(user["id"], "stop", minutes=mins, details=f"Stop um {end_ts} (+{fmt_hms(secs)})")
-            st.success(f"Gestoppt: {fmt_hms(secs)} verbucht.")
-            st.rerun()
     else:
-        if st.button("▶️ Starten", type="primary", help="Starte eine neue Zeiterfassung"):
-            ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
-            with Session(engine) as s:
-                s.add(WorkSession(user_id=user["id"], start_ts=ts))
-                safe_commit(s)
-            add_log(user["id"], "start", details=f"Start um {ts}")
-            st.success("Zeiterfassung gestartet.")
-            st.rerun()
+        st.caption("Nicht eingestempelt")
+        st.markdown('<div id="tt-timer" style="color:#9aa0a6;">00:00:00</div>', unsafe_allow_html=True)
 
     st.divider()
     st.subheader("Manuelle Anpassung")
