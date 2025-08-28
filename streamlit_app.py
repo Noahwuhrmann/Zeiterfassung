@@ -5,8 +5,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 from sqlalchemy import (
-    create_engine, Integer, String, Text, ForeignKey,
-    select
+    create_engine, Integer, String, Text, ForeignKey, select
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session, relationship
 from sqlalchemy.exc import SQLAlchemyError
@@ -15,6 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 TZ = ZoneInfo("Europe/Zurich")
 ALLOWED_USERS = [n.strip() for n in os.environ.get("ALLOWED_USERS", "Elena,Noah,Gast").split(",") if n.strip()]
 DATABASE_URL = os.environ.get("DATABASE_URL") or st.secrets.get("DATABASE_URL")
+BUILD_TAG = "build-anti-<30s-==0 @ 2025-08-29 00:25"
 
 if not DATABASE_URL:
     st.stop()
@@ -93,6 +93,17 @@ def seconds_between(start_iso: str, end_iso: str) -> int:
     end = datetime.fromisoformat(end_iso).replace(tzinfo=TZ)
     return max(0, int((end - start).total_seconds()))
 
+def round_secs_to_minutes(secs: int) -> int:
+    """
+    Rundungsvorschrift:
+      - < 30 Sekunden  -> 0 Minuten
+      - >= 30 Sekunden -> Auf die nächste volle Minute
+    """
+    if secs < 30:
+        return 0
+    mins, rest = divmod(secs, 60)
+    return mins + (1 if rest > 0 else 0)
+
 def month_key(dt: datetime) -> str:
     return dt.strftime("%Y-%m")
 
@@ -126,7 +137,6 @@ def add_log(user_id: int, kind: str, minutes: int | None = None, details: str | 
         safe_commit(s)
 
 def month_totals(user_id: int):
-    """Return list[(YYYY-MM, minutes)] from finished sessions + adjustments grouped by month."""
     with Session(engine) as s:
         sessions = s.scalars(
             select(WorkSession)
@@ -161,7 +171,6 @@ def fmt_hms(total_seconds: int) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 def live_timer_html(start_iso: str):
-    """Clientseitiger HH:MM:SS-Timer ohne Streamlit-Rerun (mit TZ-Offset)."""
     start_dt = datetime.fromisoformat(start_iso).replace(tzinfo=TZ)
     start_js = start_dt.isoformat()
     html = f"""
@@ -208,6 +217,7 @@ def center_dataframes():
 # ---------------- STREAMLIT UI ----------------
 st.set_page_config(page_title="Zeiterfassung", page_icon="⏱️", layout="wide")
 st.title("⏱️ Zeiterfassung")
+st.caption(BUILD_TAG)  # sichtbarer Build-Tag, damit du siehst, dass diese Version läuft
 
 # Sidebar Login
 st.sidebar.header("Login")
@@ -239,27 +249,16 @@ with col1:
 
         if st.button("⏹️ Stoppen", type="primary", help="Beende deine Zeiterfassung"):
             end_ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
-
-            # Sekunden berechnen
             secs = seconds_between(s_active.start_ts, end_ts)
-
-            # RUNDUNG AUF MINUTEN:
-            # unter 30s -> 0, ab 30s -> +1 Minute; auf volle Minuten
-            mins_exact = secs // 60
-            sec_rest = secs % 60
-            mins = mins_exact + (1 if sec_rest >= 30 else 0)
+            mins = round_secs_to_minutes(secs)  # <— einzig erlaubte Rundung
 
             with Session(engine) as s:
                 obj = s.get(WorkSession, s_active.id)
                 obj.end_ts = end_ts
-                obj.minutes = int(mins)      # kein "max(1, ...)" mehr
+                obj.minutes = int(mins)         # niemals auf min. 1 hochziehen
                 safe_commit(s)
 
-            add_log(
-                user["id"], "stop",
-                minutes=int(mins),
-                details=f"Stop um {end_ts} (+{fmt_hms(secs)})"
-            )
+            add_log(user["id"], "stop", minutes=int(mins), details=f"Stop um {end_ts} (+{fmt_hms(secs)})")
             st.success(f"Gestoppt: {fmt_hms(secs)} verbucht.")
             st.rerun()
     else:
