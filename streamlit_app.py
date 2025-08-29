@@ -135,6 +135,7 @@ def add_log(user_id: int, kind: str, minutes: int | None = None, details: str | 
         safe_commit(s)
 
 def month_totals(user_id: int):
+    """Return list[(YYYY-MM, minutes)] from finished sessions + adjustments grouped by month."""
     with Session(engine) as s:
         sessions = s.scalars(
             select(WorkSession)
@@ -168,10 +169,21 @@ def fmt_hms(total_seconds: int) -> str:
     seconds = td.seconds % 60
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
-def live_timer_html(start_iso: str, active: bool):
+# ---------- Timer UI ----------
+def static_timer_html(time_str: str, color: str = "#9AA0A6", height: int = 70):
+    html = f"""
+    <div style="font-size:2rem;
+                font-weight:600;
+                font-variant-numeric: tabular-nums;
+                color:{color};">
+      {time_str}
+    </div>
+    """
+    st.components.v1.html(html, height=height)
+
+def live_timer_html(start_iso: str, color: str = "#00FFAA", height: int = 70):
     start_dt = datetime.fromisoformat(start_iso).replace(tzinfo=TZ)
     start_js = start_dt.isoformat()
-    color = "#00FFAA" if active else "#AAAAAA"
     html = f"""
     <div id="tt-timer" 
          style="font-size:2rem;
@@ -183,10 +195,9 @@ def live_timer_html(start_iso: str, active: bool):
     <script>
       const pad = (n) => n.toString().padStart(2,'0');
       const start = new Date("{start_js}");
-      let active = {str(active).lower()};
       function tick(){{
         const now = new Date();
-        let sec = active ? Math.floor((now - start)/1000) : 0;
+        let sec = Math.floor((now - start)/1000);
         if (sec < 0) sec = 0;
         const h = Math.floor(sec/3600);
         const m = Math.floor((sec%3600)/60);
@@ -197,23 +208,7 @@ def live_timer_html(start_iso: str, active: bool):
       setInterval(tick, 1000);
     </script>
     """
-    st.components.v1.html(html, height=70)
-
-
-# --- Static timer (no reruns) ---
-def static_timer_html(text: str = "00:00:00", color: str = "#9AA0A6", height: int = 40):
-    """Zeigt eine statische HH:MM:SS-Anzeige ohne Reruns."""
-    st.components.v1.html(
-        f"""
-        <div style="
-            font-size:2rem;
-            font-weight:600;
-            font-variant-numeric: tabular-nums;
-            color:{color};
-        ">{text}</div>
-        """,
-        height=height,
-    )
+    st.components.v1.html(html, height=height)
 
 # ---------- Styling Helpers ----------
 def center_dataframes():
@@ -224,21 +219,6 @@ def center_dataframes():
         div[data-testid="stDataFrame"] table th div {
             text-align: center !important;
             justify-content: center !important;
-        }
-        .toggle-button {
-            width: 120px;
-            height: 60px;
-            border-radius: 30px;
-            font-size: 1.2rem;
-            font-weight: bold;
-            border: none;
-            color: white;
-        }
-        .toggle-off {
-            background-color: #cc0000;
-        }
-        .toggle-on {
-            background-color: #00aa00;
         }
         </style>
         """,
@@ -267,57 +247,52 @@ col1, col2 = st.columns([1, 1])
 with col1:
     st.subheader(f"Hallo {user['name']} 👋")
 
-    # Aktive Session prüfen
-    s_active = active_session(user["id"])  # None oder WorkSession
-
-    # Timer immer zeigen
+    s_active = active_session(user["id"])
     st.markdown("**Laufzeit**")
     if s_active:
         st.caption(f"Läuft seit: {s_active.start_ts}")
         live_timer_html(s_active.start_ts, color="#22c55e")  # grün beim Laufen
-    else:
-        static_timer_html("00:00:00", color="#9AA0A6")      # hellgrau, wenn gestoppt
 
-    # Großer Toggle (Start/Stop)
-    prev_running = st.session_state.get("running", bool(s_active))
-    st.markdown('<div class="big-switch">', unsafe_allow_html=True)
-    new_running = st.toggle(
-        "Zeiterfassung",
-        value=bool(s_active),
-        label_visibility="collapsed",
-        help="Grün = läuft · Rot = gestoppt",
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # Auf Umschalten reagieren
-    if new_running != prev_running:
-        if new_running and not s_active:
-            # START
-            ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
-            with Session(engine) as s:
-                s.add(WorkSession(user_id=user["id"], start_ts=ts))
-                safe_commit(s)
-            add_log(user["id"], "start", details=f"Start um {ts}")
-            st.session_state["running"] = True
-            st.rerun()
-        elif (not new_running) and s_active:
-            # STOP
+        if not st.toggle("Zeiterfassung läuft", value=True):
             end_ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
             secs = seconds_between(s_active.start_ts, end_ts)
             mins = minutes_between(s_active.start_ts, end_ts)
+
             with Session(engine) as s:
                 obj = s.get(WorkSession, s_active.id)
                 obj.end_ts = end_ts
                 obj.minutes = mins
                 safe_commit(s)
+
             add_log(user["id"], "stop", minutes=mins, details=f"Stop um {end_ts} (+{fmt_hms(secs)})")
-            st.session_state["running"] = False
+            st.success(f"Gestoppt: {fmt_hms(secs)} verbucht.")
             st.rerun()
     else:
-        st.session_state["running"] = prev_running
+        static_timer_html("00:00:00", color="#9AA0A6")  # hellgrau wenn gestoppt
+        if st.toggle("Zeiterfassung starten", value=False):
+            ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
+            with Session(engine) as s:
+                s.add(WorkSession(user_id=user["id"], start_ts=ts))
+                safe_commit(s)
+            add_log(user["id"], "start", details=f"Start um {ts}")
+            st.success("Zeiterfassung gestartet.")
+            st.rerun()
 
     st.divider()
     st.subheader("Manuelle Anpassung")
+    delta = st.number_input("±Minuten (z. B. -30 oder 30)", step=1, value=0)
+    reason = st.text_input("Kommentar (optional)", value="")
+    if st.button("Buchen", help="Manuell Zeit hinzufügen oder abziehen"):
+        if delta == 0:
+            st.warning("Bitte eine von 0 verschiedene Minutenanzahl eingeben.")
+        else:
+            ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
+            with Session(engine) as s:
+                s.add(Adjustment(user_id=user["id"], minutes=int(delta), reason=reason.strip(), created_ts=ts))
+                safe_commit(s)
+            add_log(user["id"], "adjust", minutes=int(delta), details=reason or "Manuelle Anpassung")
+            st.success(f"{'+' if delta>0 else ''}{int(delta)} Minuten verbucht.")
+            st.rerun()
 
 with col2:
     st.subheader("Monatsübersicht")
