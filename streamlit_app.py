@@ -44,7 +44,7 @@ class WorkSession(Base):
     __tablename__ = "sessions"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
-    start_ts: Mapped[str] = mapped_column(String(19), nullable=False)
+    start_ts: Mapped[str] = mapped_column(String(19), nullable=False)  # "YYYY-MM-DD HH:MM:SS"
     end_ts: Mapped[str | None] = mapped_column(String(19), nullable=True)
     minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     user: Mapped[User] = relationship(back_populates="sessions")
@@ -62,19 +62,22 @@ class Log(Base):
     __tablename__ = "logs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
-    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # start | stop | adjust
     minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     ts: Mapped[str] = mapped_column(String(19), nullable=False)
     details: Mapped[str | None] = mapped_column(Text, nullable=True)
     user: Mapped[User] = relationship(back_populates="logs")
 
+# Create tables + Index (aktive Session pro User)
 with engine.begin() as conn:
     Base.metadata.create_all(conn)
-    conn.exec_driver_sql("""
+    conn.exec_driver_sql(
+        """
         CREATE UNIQUE INDEX IF NOT EXISTS uq_active_session_per_user
         ON sessions (user_id)
         WHERE end_ts IS NULL;
-    """)
+        """
+    )
 
 # ---------------- HELPERS ----------------
 def safe_commit(session: Session):
@@ -93,7 +96,7 @@ def minutes_between(start_iso: str, end_iso: str) -> int:
     delta = end - start
     total_seconds = int(delta.total_seconds())
     mins, secs = divmod(total_seconds, 60)
-    minutes = mins + (1 if secs >= 30 else 0)
+    minutes = mins + (1 if secs >= 30 else 0)  # >=30s aufrunden
     return max(0, minutes)
 
 def seconds_between(start_iso: str, end_iso: str) -> int:
@@ -134,6 +137,7 @@ def add_log(user_id: int, kind: str, minutes: int | None = None, details: str | 
         safe_commit(s)
 
 def month_totals(user_id: int):
+    """Return list[(YYYY-MM, minutes)] from finished sessions + adjustments grouped by month."""
     with Session(engine) as s:
         sessions = s.scalars(
             select(WorkSession)
@@ -167,29 +171,34 @@ def fmt_hms(total_seconds: int) -> str:
     seconds = td.seconds % 60
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
-def live_timer_html(start_iso: str):
+# --- LIVE TIMER (always visible) ---
+def live_timer_html(start_iso: str | None):
+    """Show HH:MM:SS. If start_iso is None, show static 00:00:00."""
+    base_style = (
+        "font-size:2rem; font-weight:600; font-variant-numeric: tabular-nums; color:#00FFAA;"
+    )
+    if not start_iso:
+        st.components.v1.html(
+            f"<div id='tt-timer' style='{base_style}'>00:00:00</div>", height=70
+        )
+        return
+
     start_dt = datetime.fromisoformat(start_iso).replace(tzinfo=TZ)
     start_js = start_dt.isoformat()
     html = f"""
-    <div id="tt-timer" 
-         style="font-size:2rem;
-                font-weight:600;
-                font-variant-numeric: tabular-nums;
-                color:#00FFAA;">
-      00:00:00
-    </div>
+    <div id="tt-timer" style="{base_style}">00:00:00</div>
     <script>
       const pad = (n) => n.toString().padStart(2,'0');
       const start = new Date("{start_js}");
-      function tick(){{
+      function tick(){
         const now = new Date();
         let sec = Math.floor((now - start)/1000);
         if (sec < 0) sec = 0;
         const h = Math.floor(sec/3600);
         const m = Math.floor((sec%3600)/60);
         const s = sec%60;
-        document.getElementById('tt-timer').textContent = `${{pad(h)}}:${{pad(m)}}:${{pad(s)}}`;
-      }}
+        document.getElementById('tt-timer').textContent = `${pad(h)}:${pad(m)}:${pad(s)}`;
+      }
       tick();
       setInterval(tick, 1000);
     </script>
@@ -206,33 +215,20 @@ def center_dataframes():
             text-align: center !important;
             justify-content: center !important;
         }
-
-        /* Toggle label text */
-        div[data-testid="stSwitch"] label div[data-testid="stMarkdownContainer"] p {
-            font-size: 1.2rem;
-            font-weight: bold;
-        }
-
-        /* Enlarge switch ~50% */
-        div[data-testid="stSwitch"] {
+        
+        /* Bigger, colorized toggle (OFF=red, ON=green) */
+        .st-key-clock_in_toggle [data-testid="stSwitch"] label > div:first-child {
             transform: scale(1.5);
-            transform-origin: left center;
-            margin: 15px 0;
         }
-
-        /* OFF state -> red */
-        div[data-testid="stSwitch"] label div[role="switch"][aria-checked="false"] {
-            background-color: #e11d48 !important; /* rose-600 */
-            border-color: #e11d48 !important;
+        /* OFF state (unchecked) */
+        .st-key-clock_in_toggle [data-testid="stSwitch"] input:not(:checked) + div {
+            background: #ef4444 !important;  /* red */
+            box-shadow: 0 0 0 2px rgba(239,68,68,0.25) inset !important;
         }
-        /* ON state -> green */
-        div[data-testid="stSwitch"] label div[role="switch"][aria-checked="true"] {
-            background-color: #10b981 !important; /* emerald-500 */
-            border-color: #10b981 !important;
-        }
-        /* Bigger thumb */
-        div[data-testid="stSwitch"] label div[role="switch"] span {
-            transform: scale(1.15);
+        /* ON state (checked) */
+        .st-key-clock_in_toggle [data-testid="stSwitch"] input:checked + div {
+            background: #22c55e !important;  /* green */
+            box-shadow: 0 0 0 2px rgba(34,197,94,0.25) inset !important;
         }
         </style>
         """,
@@ -243,6 +239,7 @@ def center_dataframes():
 st.set_page_config(page_title="Zeiterfassung", page_icon="⏱️", layout="wide")
 st.title("⏱️ Zeiterfassung")
 
+# Sidebar Login
 st.sidebar.header("Login")
 name = st.sidebar.selectbox("Name", ALLOWED_USERS, index=0, key="name_select")
 if st.sidebar.button("Einloggen", help="Logge dich mit deinem Namen ein"):
@@ -260,42 +257,52 @@ col1, col2 = st.columns([1, 1])
 with col1:
     st.subheader(f"Hallo {user['name']} 👋")
 
+    # --- Toggle-based start/stop ---
+    s_active = active_session(user["id"])  # current state from DB
+    was_active = bool(s_active)
+
+    st.caption("Eingestempelt" if was_active else "Nicht eingestempelt")
+
+    current = st.toggle(
+        "Eingestempelt",
+        value=was_active,
+        key="clock_in_toggle",
+        help="Schieberegler: Rot = ausgestempelt, Grün = eingestempelt",
+    )
+
+    # First render: remember state without acting
+    if "_prev_toggle" not in st.session_state:
+        st.session_state["_prev_toggle"] = current
+
+    # State changed by user
+    if current != st.session_state["_prev_toggle"]:
+        if current and not was_active:
+            # Start session
+            ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
+            with Session(engine) as s:
+                s.add(WorkSession(user_id=user["id"], start_ts=ts))
+                safe_commit(s)
+            add_log(user["id"], "start", details=f"Start um {ts}")
+        elif (not current) and was_active:
+            # Stop session
+            end_ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
+            secs = seconds_between(s_active.start_ts, end_ts)
+            mins = minutes_between(s_active.start_ts, end_ts)
+            with Session(engine) as s:
+                obj = s.get(WorkSession, s_active.id)
+                obj.end_ts = end_ts
+                obj.minutes = mins
+                safe_commit(s)
+            add_log(user["id"], "stop", minutes=mins, details=f"Stop um {end_ts} (+{fmt_hms(secs)})")
+        st.session_state["_prev_toggle"] = current
+        st.rerun()
+
+    # Refresh active session after potential change
     s_active = active_session(user["id"])
-    live_box = st.empty()
 
-    state = st.toggle("Eingestempelt", value=bool(s_active), key="toggle")
-    if state and not s_active:
-        ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
-        with Session(engine) as s:
-            s.add(WorkSession(user_id=user["id"], start_ts=ts))
-            safe_commit(s)
-        add_log(user["id"], "start", details=f"Start um {ts}")
-        st.success("Zeiterfassung gestartet.")
-        st.rerun()
-    elif not state and s_active:
-        end_ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
-        secs = seconds_between(s_active.start_ts, end_ts)
-        mins = minutes_between(s_active.start_ts, end_ts)
-
-        with Session(engine) as s:
-            obj = s.get(WorkSession, s_active.id)
-            obj.end_ts = end_ts
-            obj.minutes = mins
-            safe_commit(s)
-
-        add_log(user["id"], "stop", minutes=mins, details=f"Stop um {end_ts} (+{fmt_hms(secs)})")
-        st.success(f"Gestoppt: {fmt_hms(secs)} verbucht.")
-        st.rerun()
-
+    # Always show live timer (00:00:00 if none)
     st.markdown("**Laufzeit (live):**")
-    with live_box:
-        st.markdown("**Laufzeit (live):**")
-        if s_active:
-            live_timer_html(s_active.start_ts)
-            st.caption("Eingestempelt")
-        else:
-            st.markdown('<div style="font-size:2rem; font-weight:600; font-variant-numeric: tabular-nums; color:#e11d48;">00:00:00</div>', unsafe_allow_html=True)
-            st.caption("Nicht eingestempelt")
+    live_timer_html(s_active.start_ts if s_active else None)
 
     st.divider()
     st.subheader("Manuelle Anpassung")
