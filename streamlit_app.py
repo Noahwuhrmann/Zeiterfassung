@@ -71,13 +71,11 @@ class Log(Base):
 # Create tables + Index (aktive Session pro User)
 with engine.begin() as conn:
     Base.metadata.create_all(conn)
-    conn.exec_driver_sql(
-        """
+    conn.exec_driver_sql("""
         CREATE UNIQUE INDEX IF NOT EXISTS uq_active_session_per_user
         ON sessions (user_id)
         WHERE end_ts IS NULL;
-        """
-    )
+    """)
 
 # ---------------- HELPERS ----------------
 def safe_commit(session: Session):
@@ -171,34 +169,30 @@ def fmt_hms(total_seconds: int) -> str:
     seconds = td.seconds % 60
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
-# --- LIVE TIMER (always visible) ---
-def live_timer_html(start_iso: str | None):
-    """Show HH:MM:SS. If start_iso is None, show static 00:00:00."""
-    base_style = (
-        "font-size:2rem; font-weight:600; font-variant-numeric: tabular-nums; color:#00FFAA;"
-    )
-    if not start_iso:
-        st.components.v1.html(
-            f"<div id='tt-timer' style='{base_style}'>00:00:00</div>", height=70
-        )
-        return
-
+def live_timer_html(start_iso: str):
+    """Clientseitiger HH:MM:SS-Timer ohne Streamlit-Rerun (mit TZ-Offset)."""
     start_dt = datetime.fromisoformat(start_iso).replace(tzinfo=TZ)
     start_js = start_dt.isoformat()
     html = f"""
-    <div id="tt-timer" style="{base_style}">00:00:00</div>
+    <div id="tt-timer" 
+         style="font-size:2rem;
+                font-weight:600;
+                font-variant-numeric: tabular-nums;
+                color:#00FFAA;">
+      00:00:00
+    </div>
     <script>
       const pad = (n) => n.toString().padStart(2,'0');
       const start = new Date("{start_js}");
-      function tick(){
+      function tick(){{
         const now = new Date();
         let sec = Math.floor((now - start)/1000);
         if (sec < 0) sec = 0;
         const h = Math.floor(sec/3600);
         const m = Math.floor((sec%3600)/60);
         const s = sec%60;
-        document.getElementById('tt-timer').textContent = `${pad(h)}:${pad(m)}:${pad(s)}`;
-      }
+        document.getElementById('tt-timer').textContent = `${{pad(h)}}:${{pad(m)}}:${{pad(s)}}`;
+      }}
       tick();
       setInterval(tick, 1000);
     </script>
@@ -214,21 +208,6 @@ def center_dataframes():
         div[data-testid="stDataFrame"] table th div {
             text-align: center !important;
             justify-content: center !important;
-        }
-        
-        /* Bigger, colorized toggle (OFF=red, ON=green) */
-        .st-key-clock_in_toggle [data-testid="stSwitch"] label > div:first-child {
-            transform: scale(1.5);
-        }
-        /* OFF state (unchecked) */
-        .st-key-clock_in_toggle [data-testid="stSwitch"] input:not(:checked) + div {
-            background: #ef4444 !important;  /* red */
-            box-shadow: 0 0 0 2px rgba(239,68,68,0.25) inset !important;
-        }
-        /* ON state (checked) */
-        .st-key-clock_in_toggle [data-testid="stSwitch"] input:checked + div {
-            background: #22c55e !important;  /* green */
-            box-shadow: 0 0 0 2px rgba(34,197,94,0.25) inset !important;
         }
         </style>
         """,
@@ -257,52 +236,39 @@ col1, col2 = st.columns([1, 1])
 with col1:
     st.subheader(f"Hallo {user['name']} 👋")
 
-    # --- Toggle-based start/stop ---
-    s_active = active_session(user["id"])  # current state from DB
-    was_active = bool(s_active)
+    s_active = active_session(user["id"])
+    live_box = st.empty()
 
-    st.caption("Eingestempelt" if was_active else "Nicht eingestempelt")
+    if s_active:
+        st.caption(f"Läuft seit: {s_active.start_ts}")
 
-    current = st.toggle(
-        "Eingestempelt",
-        value=was_active,
-        key="clock_in_toggle",
-        help="Schieberegler: Rot = ausgestempelt, Grün = eingestempelt",
-    )
+        with live_box:
+            st.markdown("**Laufzeit (live):**")
+            live_timer_html(s_active.start_ts)
 
-    # First render: remember state without acting
-    if "_prev_toggle" not in st.session_state:
-        st.session_state["_prev_toggle"] = current
-
-    # State changed by user
-    if current != st.session_state["_prev_toggle"]:
-        if current and not was_active:
-            # Start session
-            ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
-            with Session(engine) as s:
-                s.add(WorkSession(user_id=user["id"], start_ts=ts))
-                safe_commit(s)
-            add_log(user["id"], "start", details=f"Start um {ts}")
-        elif (not current) and was_active:
-            # Stop session
+        if st.button("⏹️ Stoppen", type="primary", help="Beende deine Zeiterfassung"):
             end_ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
             secs = seconds_between(s_active.start_ts, end_ts)
-            mins = minutes_between(s_active.start_ts, end_ts)
+            mins = minutes_between(s_active.start_ts, end_ts)  # <30s => 0, ab 30s => +1
+
             with Session(engine) as s:
                 obj = s.get(WorkSession, s_active.id)
                 obj.end_ts = end_ts
                 obj.minutes = mins
                 safe_commit(s)
+
             add_log(user["id"], "stop", minutes=mins, details=f"Stop um {end_ts} (+{fmt_hms(secs)})")
-        st.session_state["_prev_toggle"] = current
-        st.rerun()
-
-    # Refresh active session after potential change
-    s_active = active_session(user["id"])
-
-    # Always show live timer (00:00:00 if none)
-    st.markdown("**Laufzeit (live):**")
-    live_timer_html(s_active.start_ts if s_active else None)
+            st.success(f"Gestoppt: {fmt_hms(secs)} verbucht.")
+            st.rerun()
+    else:
+        if st.button("▶️ Starten", type="primary", help="Starte eine neue Zeiterfassung"):
+            ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
+            with Session(engine) as s:
+                s.add(WorkSession(user_id=user["id"], start_ts=ts))
+                safe_commit(s)
+            add_log(user["id"], "start", details=f"Start um {ts}")
+            st.success("Zeiterfassung gestartet.")
+            st.rerun()
 
     st.divider()
     st.subheader("Manuelle Anpassung")
