@@ -208,19 +208,23 @@ def static_timer_html(time_str: str, color: str = "#9AA0A6", height: int = 70):
 
 
 def live_timer_html(start_iso: str, color: str = "#00FFAA", height: int = 70):
+    """Clientseitiger HH:MM:SS-Timer ohne Streamlit-Rerun (mit TZ-Offset).
+    Diese Version vermeidet JS-Template-Literals, damit keine geschweiften Klammern
+    mit Python f-Strings kollidieren.
+    """
     start_dt = datetime.fromisoformat(start_iso).replace(tzinfo=TZ)
     start_js = start_dt.isoformat()
     html = f"""
-    <div id="tt-timer" 
-         style="font-size:2rem;
+    <div id=\"tt-timer\" 
+         style=\"font-size:2rem;
                 font-weight:600;
                 font-variant-numeric: tabular-nums;
-                color:{color};">
+                color:{color};\">
       00:00:00
     </div>
     <script>
       const pad = (n) => n.toString().padStart(2,'0');
-      const start = new Date("{start_js}");
+      const start = new Date('{start_js}');
       function tick(){
         const now = new Date();
         let sec = Math.floor((now - start)/1000);
@@ -228,7 +232,7 @@ def live_timer_html(start_iso: str, color: str = "#00FFAA", height: int = 70):
         const h = Math.floor(sec/3600);
         const m = Math.floor((sec%3600)/60);
         const s = sec%60;
-        document.getElementById('tt-timer').textContent = `${pad(h)}:${pad(m)}:${pad(s)}`;
+        document.getElementById('tt-timer').textContent = pad(h)+\":\"+pad(m)+\":\"+pad(s);
       }
       tick();
       setInterval(tick, 1000);
@@ -239,133 +243,6 @@ def live_timer_html(start_iso: str, color: str = "#00FFAA", height: int = 70):
 # ---------- Styling Helpers ----------
 
 def center_dataframes():
-    st.markdown(
-        """
-        <style>
-        /* Tabellenzellen mittig */
-        div[data-testid="stDataFrame"] table td div,
-        div[data-testid="stDataFrame"] table th div { text-align: center !important; justify-content: center !important; }
-
-        /* GROSSER TOGGLE + Farben */
-        [data-testid="stToggle"]{ transform: scale(1.6); }
-        /* Toggle-Track (BaseWeb) */
-        [data-testid="stToggle"] [data-baseweb="toggle"]{ background-color:#ef4444; }
-        [data-testid="stToggle"] [data-baseweb="toggle"][aria-checked="true"]{ background-color:#16a34a; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-# ---------------- STREAMLIT UI ----------------
-st.set_page_config(page_title="Zeiterfassung", page_icon="⏱️", layout="wide")
-st.title("⏱️ Zeiterfassung")
-
-# Sidebar Login
-st.sidebar.header("Login")
-name = st.sidebar.selectbox("Name", ALLOWED_USERS, index=0, key="name_select")
-if st.sidebar.button("Einloggen", help="Logge dich mit deinem Namen ein"):
-    user_obj = get_or_create_user(name)
-    st.session_state["user"] = {"id": user_obj.id, "name": user_obj.name}
-    st.success(f"Hallo {user_obj.name}!")
-
-user = st.session_state.get("user")
-if not user:
-    st.info("Bitte links deinen Namen wählen und **Einloggen**.")
-    st.stop()
-
-col1, col2 = st.columns([1, 1])
-
-with col1:
-    st.subheader(f"Hallo {user['name']} 👋")
-
-    s_active = active_session(user["id"])
-    st.markdown("**Laufzeit**")
-    if s_active:
-        st.caption(f"Läuft seit: {s_active.start_ts}")
-        live_timer_html(s_active.start_ts, color="#22c55e")  # grün beim Laufen
-
-        if not st.toggle("Zeiterfassung läuft", value=True):
-            end_ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
-            secs = seconds_between(s_active.start_ts, end_ts)
-            mins = minutes_between(s_active.start_ts, end_ts)
-
-            with Session(engine) as s:
-                obj = s.get(WorkSession, s_active.id)
-                obj.end_ts = end_ts
-                obj.minutes = mins
-                safe_commit(s)
-
-            add_log(user["id"], "stop", minutes=mins, details=f"Stop um {end_ts} (+{fmt_hms(secs)})")
-            st.success(f"Gestoppt: {fmt_hms(secs)} verbucht.")
-            st.rerun()
-    else:
-        static_timer_html("00:00:00", color="#9AA0A6")  # hellgrau wenn gestoppt
-        if st.toggle("Zeiterfassung starten", value=False):
-            ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
-            with Session(engine) as s:
-                s.add(WorkSession(user_id=user["id"], start_ts=ts))
-                safe_commit(s)
-            add_log(user["id"], "start", details=f"Start um {ts}")
-            st.success("Zeiterfassung gestartet.")
-            st.rerun()
-
-    st.divider()
-    st.subheader("Manuelle Anpassung")
-    delta = st.number_input("±Minuten (z. B. -30 oder 30)", step=1, value=0)
-    reason = st.text_input("Kommentar (optional)", value="")
-    if st.button("Buchen", help="Manuell Zeit hinzufügen oder abziehen"):
-        if delta == 0:
-            st.warning("Bitte eine von 0 verschiedene Minutenanzahl eingeben.")
-        else:
-            ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
-            with Session(engine) as s:
-                s.add(Adjustment(user_id=user["id"], minutes=int(delta), reason=reason.strip(), created_ts=ts))
-                safe_commit(s)
-            add_log(user["id"], "adjust", minutes=int(delta), details=reason or "Manuelle Anpassung")
-            st.success(f"{'+' if delta>0 else ''}{int(delta)} Minuten verbucht.")
-            st.rerun()
-
-with col2:
-    st.subheader("Monatsübersicht")
-    current = month_minutes(user["id"])
-    st.metric("Aktueller Monat", f"{current//60:02d}:{current%60:02d} h")
-
-    data = month_totals(user["id"])
-    df = pd.DataFrame([
-        {"Monat": month_label_from_key(k), "Minuten": m, "Stunden": round(m/60, 2), "Std:Min": f"{m//60:02d}:{m%60:02d}"}
-        for k, m in data
-    ])
-
-    center_dataframes()
-    st.dataframe(df, use_container_width=True, hide_index=True)
-    if not df.empty:
-        st.download_button(
-            "CSV: Monate",
-            df.to_csv(index=False).encode("utf-8"),
-            file_name=f"months_{user['name']}.csv",
-            mime="text/csv",
-        )
-
-st.divider()
-st.subheader("Logbuch")
-with Session(engine) as s:
-    logs = s.execute(
-        select(Log.ts, Log.kind, Log.minutes, Log.details)
-        .where(Log.user_id == user["id"]) 
-        .order_by(Log.id.desc())
-        .limit(500)
-    ).all()
-
-df_log = pd.DataFrame(logs, columns=["ts", "kind", "minutes", "details"])
-center_dataframes()
-st.dataframe(df_log, use_container_width=True, hide_index=True)
-if not df_log.empty:
-    st.download_button(
-        "CSV: Logbuch",
-        df_log.to_csv(index=False).encode("utf-8"),
-        file_name=f"logs_{user['name']}.csv",
-        mime="text/csv",
-    )_dataframes():
     st.markdown(
         """
         <style>
