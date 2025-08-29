@@ -199,6 +199,22 @@ def live_timer_html(start_iso: str, active: bool):
     """
     st.components.v1.html(html, height=70)
 
+
+# --- Static timer (no reruns) ---
+def static_timer_html(text: str = "00:00:00", color: str = "#9AA0A6", height: int = 40):
+    """Zeigt eine statische HH:MM:SS-Anzeige ohne Reruns."""
+    st.components.v1.html(
+        f"""
+        <div style="
+            font-size:2rem;
+            font-weight:600;
+            font-variant-numeric: tabular-nums;
+            color:{color};
+        ">{text}</div>
+        """,
+        height=height,
+    )
+
 # ---------- Styling Helpers ----------
 def center_dataframes():
     st.markdown(
