@@ -215,26 +215,27 @@ def center_dataframes():
     st.markdown(
         """
         <style>
-        div[data-testid="stDataFrame"] table td div,
-        div[data-testid="stDataFrame"] table th div {
+        /* Center headers and cells inside ALL st.dataframe tables */
+        div[data-testid="stDataFrame"] table {
+            width: 100%;
+        }
+        div[data-testid="stDataFrame"] th,
+        div[data-testid="stDataFrame"] td {
             text-align: center !important;
+        }
+        /* Streamlit renders cell/header content inside nested divs – center those too */
+        div[data-testid="stDataFrame"] th > div,
+        div[data-testid="stDataFrame"] td > div {
+            display: flex;
             justify-content: center !important;
+            align-items: center !important;
         }
-        /* Toggle größer und Farben anpassen */
-        div[data-testid="stToggle"] label {
-            transform: scale(1.5);
-            padding: 10px;
-            font-size: 1.2rem;
-        }
-        div[data-testid="stToggle"] [data-baseweb="switch"] span {
-            height: 32px !important;
-            width: 60px !important;
-        }
-        div[data-testid="stToggle"] [data-baseweb="switch"] span[data-checked="true"] {
-            background-color: #22c55e !important; /* Grün wenn an */
-        }
-        div[data-testid="stToggle"] [data-baseweb="switch"] span[data-checked="false"] {
-            background-color: #ef4444 !important; /* Rot wenn aus */
+        /* Newer table renderer uses ARIA roles; cover those as well */
+        div[data-testid="stDataFrame"] [role="columnheader"] > div,
+        div[data-testid="stDataFrame"] [role="gridcell"] > div {
+            display: flex;
+            justify-content: center !important;
+            align-items: center !important;
         }
         </style>
         """,
