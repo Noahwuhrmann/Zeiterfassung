@@ -169,19 +169,8 @@ def fmt_hms(total_seconds: int) -> str:
     seconds = td.seconds % 60
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
-# ---------- Timer UI ----------
-def static_timer_html(time_str: str, color: str = "#9AA0A6", height: int = 70):
-    html = f"""
-    <div style="font-size:2rem;
-                font-weight:600;
-                font-variant-numeric: tabular-nums;
-                color:{color};">
-      {time_str}
-    </div>
-    """
-    st.components.v1.html(html, height=height)
-
 def live_timer_html(start_iso: str, color: str = "#00FFAA", height: int = 70):
+    """Clientseitiger HH:MM:SS-Timer ohne Streamlit-Rerun (mit TZ-Offset)."""
     start_dt = datetime.fromisoformat(start_iso).replace(tzinfo=TZ)
     start_js = start_dt.isoformat()
     html = f"""
@@ -210,6 +199,17 @@ def live_timer_html(start_iso: str, color: str = "#00FFAA", height: int = 70):
     """
     st.components.v1.html(html, height=height)
 
+def static_timer_html(time_str: str, color: str = "#9AA0A6", height: int = 70):
+    html = f"""
+    <div style="font-size:2rem;
+                font-weight:600;
+                font-variant-numeric: tabular-nums;
+                color:{color};">
+      {time_str}
+    </div>
+    """
+    st.components.v1.html(html, height=height)
+
 # ---------- Styling Helpers ----------
 def center_dataframes():
     st.markdown(
@@ -219,6 +219,22 @@ def center_dataframes():
         div[data-testid="stDataFrame"] table th div {
             text-align: center !important;
             justify-content: center !important;
+        }
+        /* Toggle größer und Farben anpassen */
+        div[data-testid="stToggle"] label {
+            transform: scale(1.5);
+            padding: 10px;
+            font-size: 1.2rem;
+        }
+        div[data-testid="stToggle"] [data-baseweb="switch"] span {
+            height: 32px !important;
+            width: 60px !important;
+        }
+        div[data-testid="stToggle"] [data-baseweb="switch"] span[data-checked="true"] {
+            background-color: #22c55e !important; /* Grün wenn an */
+        }
+        div[data-testid="stToggle"] [data-baseweb="switch"] span[data-checked="false"] {
+            background-color: #ef4444 !important; /* Rot wenn aus */
         }
         </style>
         """,
@@ -253,7 +269,9 @@ with col1:
         st.caption(f"Läuft seit: {s_active.start_ts}")
         live_timer_html(s_active.start_ts, color="#22c55e")  # grün beim Laufen
 
-        if not st.toggle("Zeiterfassung läuft", value=True):
+        if st.toggle("⏹️ Zeiterfassung läuft", value=True):
+            pass
+        else:
             end_ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
             secs = seconds_between(s_active.start_ts, end_ts)
             mins = minutes_between(s_active.start_ts, end_ts)
@@ -269,7 +287,7 @@ with col1:
             st.rerun()
     else:
         static_timer_html("00:00:00", color="#9AA0A6")  # hellgrau wenn gestoppt
-        if st.toggle("Zeiterfassung starten", value=False):
+        if st.toggle("▶️ Zeiterfassung starten", value=False):
             ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
             with Session(engine) as s:
                 s.add(WorkSession(user_id=user["id"], start_ts=ts))
