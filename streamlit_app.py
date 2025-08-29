@@ -107,7 +107,7 @@ def seconds_between(start_iso: str, end_iso: str) -> int:
 def month_key(dt: datetime) -> str:
     return dt.strftime("%Y-%m")
 
-# Monatsschlüssel (YYYY-MM) -> "August 25" (deutsch, robust ohne System-Locale)
+# Monatsschlüssel (YYYY-MM) -> "August 25"
 _DE_MONTHS = [
     "Januar", "Februar", "März", "April", "Mai", "Juni",
     "Juli", "August", "September", "Oktober", "November", "Dezember",
@@ -120,7 +120,6 @@ def month_label_from_key(key: str) -> str:
     name = _DE_MONTHS[m-1]
     return f"{name} {y%100:02d}"
 
-
 def get_or_create_user(name: str) -> User:
     with Session(engine) as s:
         user = s.scalar(select(User).where(User.name == name))
@@ -131,7 +130,6 @@ def get_or_create_user(name: str) -> User:
             s.refresh(user)
         return user
 
-
 def active_session(user_id: int) -> WorkSession | None:
     with Session(engine) as s:
         return s.scalar(
@@ -139,7 +137,6 @@ def active_session(user_id: int) -> WorkSession | None:
             .where(WorkSession.user_id == user_id, WorkSession.end_ts.is_(None))
             .order_by(WorkSession.id.desc())
         )
-
 
 def add_log(user_id: int, kind: str, minutes: int | None = None, details: str | None = None):
     with Session(engine) as s:
@@ -153,7 +150,6 @@ def add_log(user_id: int, kind: str, minutes: int | None = None, details: str | 
             )
         )
         safe_commit(s)
-
 
 def month_totals(user_id: int):
     """Return list[(YYYY-MM, minutes)] from finished sessions + adjustments grouped by month."""
@@ -177,14 +173,12 @@ def month_totals(user_id: int):
         totals[k] = totals.get(k, 0) + int(a.minutes)
     return sorted(totals.items(), key=lambda kv: kv[0], reverse=True)
 
-
 def month_minutes(user_id: int) -> int:
     key = month_key(now_local())
     for k, v in month_totals(user_id):
         if k == key:
             return v
     return 0
-
 
 def fmt_hms(total_seconds: int) -> str:
     td = timedelta(seconds=total_seconds)
@@ -194,7 +188,6 @@ def fmt_hms(total_seconds: int) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 # ---------- Timer UI ----------
-
 def static_timer_html(time_str: str, color: str = "#9AA0A6", height: int = 70):
     html = f"""
     <div style="font-size:2rem;
@@ -206,15 +199,10 @@ def static_timer_html(time_str: str, color: str = "#9AA0A6", height: int = 70):
     """
     st.components.v1.html(html, height=height)
 
-
 def live_timer_html(start_iso: str, color: str = "#00FFAA", height: int = 70):
-    """Clientseitiger HH:MM:SS-Timer ohne Streamlit-Rerun (TZ-sicher),
-    ohne f-String/format in der JS-Passage, damit keine {}/Template-Konflikte entstehen.
-    """
+    """Clientseitiger HH:MM:SS-Timer ohne Streamlit-Rerun (TZ-sicher)."""
     start_dt = datetime.fromisoformat(start_iso).replace(tzinfo=TZ)
     start_js = start_dt.isoformat()
-
-    # Platzhalter-String ohne f-string, danach simple .replace()-Injection
     html = (
         """
         <div id=\"tt-timer\" 
@@ -243,8 +231,8 @@ def live_timer_html(start_iso: str, color: str = "#00FFAA", height: int = 70):
         .replace("COLOR", color)
     )
     st.components.v1.html(html, height=height)
-# ---------- Styling Helpers ----------
 
+# ---------- Styling Helpers ----------
 def center_dataframes():
     st.markdown(
         """
@@ -255,10 +243,42 @@ def center_dataframes():
 
         /* GROSSER TOGGLE + Farben */
         [data-testid="stToggle"]{ transform: scale(1.6); }
-        /* Toggle-Track (BaseWeb) */
         [data-testid="stToggle"] [data-baseweb="toggle"]{ background-color:#ef4444; }
         [data-testid="stToggle"] [data-baseweb="toggle"][aria-checked="true"]{ background-color:#16a34a; }
         </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+# 👉 NEU: Sidebar nach Login einklappen
+def collapse_sidebar():
+    """Klappt die Sidebar per JS ein (robuste Selektoren, mehrfache Versuche)."""
+    st.markdown(
+        """
+        <script>
+        (function(){
+          const doc = window.parent.document;
+          function clickCollapse(){
+            // mehrere mögliche Buttons/Selektoren prüfen (Streamlit-Versionen variieren)
+            const candidates = [
+              'button[aria-label="Hide sidebar"]',
+              'button[aria-label="Toggle sidebar"]',
+              'button[title="Hide sidebar"]',
+              '[data-testid="stSidebarCollapseButton"]',
+              '[data-testid="baseButton-headerNoPadding"]'
+            ];
+            let btn = null;
+            for (const sel of candidates){
+              btn = doc.querySelector(sel);
+              if (btn) break;
+            }
+            if (btn) btn.click();
+          }
+          setTimeout(clickCollapse, 60);
+          setTimeout(clickCollapse, 300);
+          setTimeout(clickCollapse, 800);
+        })();
+        </script>
         """,
         unsafe_allow_html=True,
     )
@@ -274,6 +294,7 @@ if st.sidebar.button("Einloggen", help="Logge dich mit deinem Namen ein"):
     user_obj = get_or_create_user(name)
     st.session_state["user"] = {"id": user_obj.id, "name": user_obj.name}
     st.success(f"Hallo {user_obj.name}!")
+    collapse_sidebar()  # 👉 NEU: direkt nach Login einklappen
 
 user = st.session_state.get("user")
 if not user:
@@ -289,7 +310,7 @@ with col1:
     st.markdown("**Laufzeit**")
     if s_active:
         st.caption(f"Läuft seit: {s_active.start_ts}")
-        live_timer_html(s_active.start_ts, color="#22c55e")  # grün beim Laufen
+        live_timer_html(s_active.start_ts, color="#22c55e")
 
         if not st.toggle("Zeiterfassung läuft", value=True):
             end_ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
@@ -306,7 +327,7 @@ with col1:
             st.success(f"Gestoppt: {fmt_hms(secs)} verbucht.")
             st.rerun()
     else:
-        static_timer_html("00:00:00", color="#9AA0A6")  # hellgrau wenn gestoppt
+        static_timer_html("00:00:00", color="#9AA0A6")
         if st.toggle("Zeiterfassung starten", value=False):
             ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
             with Session(engine) as s:
