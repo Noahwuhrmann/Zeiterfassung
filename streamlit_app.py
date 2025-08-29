@@ -208,38 +208,41 @@ def static_timer_html(time_str: str, color: str = "#9AA0A6", height: int = 70):
 
 
 def live_timer_html(start_iso: str, color: str = "#00FFAA", height: int = 70):
-    """Clientseitiger HH:MM:SS-Timer ohne Streamlit-Rerun (mit TZ-Offset).
-    Diese Version vermeidet JS-Template-Literals, damit keine geschweiften Klammern
-    mit Python f-Strings kollidieren.
+    """Clientseitiger HH:MM:SS-Timer ohne Streamlit-Rerun (TZ-sicher),
+    ohne f-String/format in der JS-Passage, damit keine {}/Template-Konflikte entstehen.
     """
     start_dt = datetime.fromisoformat(start_iso).replace(tzinfo=TZ)
     start_js = start_dt.isoformat()
-    html = f"""
-    <div id=\"tt-timer\" 
-         style=\"font-size:2rem;
-                font-weight:600;
-                font-variant-numeric: tabular-nums;
-                color:{color};\">
-      00:00:00
-    </div>
-    <script>
-      const pad = (n) => n.toString().padStart(2,'0');
-      const start = new Date('{start_js}');
-      function tick(){
-        const now = new Date();
-        let sec = Math.floor((now - start)/1000);
-        if (sec < 0) sec = 0;
-        const h = Math.floor(sec/3600);
-        const m = Math.floor((sec%3600)/60);
-        const s = sec%60;
-        document.getElementById('tt-timer').textContent = pad(h)+\":\"+pad(m)+\":\"+pad(s);
-      }
-      tick();
-      setInterval(tick, 1000);
-    </script>
-    """
-    st.components.v1.html(html, height=height)
 
+    # Platzhalter-String ohne f-string, danach simple .replace()-Injection
+    html = (
+        """
+        <div id=\"tt-timer\" 
+             style=\"font-size:2rem; font-weight:600; font-variant-numeric: tabular-nums; color:COLOR;\">
+          00:00:00
+        </div>
+        <script>
+          (function(){
+            const pad = (n) => String(n).padStart(2,'0');
+            const start = new Date('START_JS');
+            function tick(){
+              const now = new Date();
+              let sec = Math.floor((now - start)/1000);
+              if (sec < 0) sec = 0;
+              const h = Math.floor(sec/3600);
+              const m = Math.floor((sec%3600)/60);
+              const s = sec%60;
+              document.getElementById('tt-timer').textContent = pad(h)+\":\"+pad(m)+\":\"+pad(s);
+            }
+            tick();
+            setInterval(tick, 1000);
+          })();
+        </script>
+        """
+        .replace("START_JS", start_js)
+        .replace("COLOR", color)
+    )
+    st.components.v1.html(html, height=height)
 # ---------- Styling Helpers ----------
 
 def center_dataframes():
