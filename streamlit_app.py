@@ -22,6 +22,7 @@ if DATABASE_URL.startswith("postgres://"):
 elif DATABASE_URL.startswith("postgresql://") and "+psycopg" not in DATABASE_URL:
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 
+
 if not DATABASE_URL:
     st.stop()
     raise RuntimeError("Set DATABASE_URL via environment or Streamlit secrets.")
